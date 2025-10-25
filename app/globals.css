@@ -1,0 +1,96 @@
+@import url('https://fonts.googleapis.com/css2?family=Merriweather:wght@300;400;700&family=Inter:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 0%;
+    --foreground: 0 0% 100%;
+    --card: 0 0% 6%;
+    --card-foreground: 0 0% 100%;
+    --popover: 0 0% 6%;
+    --popover-foreground: 0 0% 100%;
+    --primary: 46 63% 54%;
+    --primary-foreground: 0 0% 0%;
+    --secondary: 89 22% 30%;
+    --secondary-foreground: 0 0% 100%;
+    --muted: 0 0% 12%;
+    --muted-foreground: 0 0% 68%;
+    --accent: 46 63% 54%;
+    --accent-foreground: 0 0% 6%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 14%;
+    --input: 0 0% 16%;
+    --ring: 46 63% 54%;
+    --radius: 1rem;
+    --golden: #d4af37;
+    --olive: #708238;
+    --veil: rgba(255, 255, 255, 0.04);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border antialiased;
+  }
+
+  body {
+    @apply min-h-screen bg-black text-white font-sans;
+    background-image: radial-gradient(circle at top, rgba(212, 175, 55, 0.04), transparent 60%);
+  }
+
+  a {
+    @apply text-golden transition-colors duration-200;
+  }
+
+  a:hover {
+    @apply text-golden/80;
+  }
+
+  ::selection {
+    background: rgba(212, 175, 55, 0.3);
+    color: #fff;
+  }
+
+  :focus-visible {
+    outline: 2px solid #d4af37;
+    outline-offset: 4px;
+  }
+
+  .font-serif {
+    font-family: 'Merriweather', serif;
+  }
+
+  .font-sans {
+    font-family: 'Inter', sans-serif;
+  }
+}
+
+@layer utilities {
+  .text-golden {
+    color: #D4AF37;
+  }
+
+  .text-olive {
+    color: #708238;
+  }
+
+  .bg-golden {
+    background-color: #D4AF37;
+  }
+
+  .bg-olive {
+    background-color: #708238;
+  }
+
+  .border-golden {
+    border-color: #D4AF37;
+  }
+
+  .border-olive {
+    border-color: #708238;
+  }
+}

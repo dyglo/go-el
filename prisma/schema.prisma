@@ -1,0 +1,263 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ReactionType {
+  AMEN    @map("amen")
+  PRAYING @map("praying")
+}
+
+enum PostStatus {
+  PUBLISHED @map("published")
+  FLAGGED   @map("flagged")
+  ARCHIVED  @map("archived")
+}
+
+enum AuthProvider {
+  GOOGLE @map("google")
+  APPLE  @map("apple")
+}
+
+enum ReportStatus {
+  PENDING    @map("pending")
+  IN_REVIEW  @map("in_review")
+  ACTIONED   @map("actioned")
+  DISMISSED  @map("dismissed")
+}
+
+enum GroupRole {
+  OWNER       @map("owner")
+  FACILITATOR @map("facilitator")
+  MEMBER      @map("member")
+}
+
+enum GroupMembershipStatus {
+  MEMBER    @map("member")
+  PENDING   @map("pending")
+  SUSPENDED @map("suspended")
+}
+
+enum NotificationPreference {
+  ALL      @map("all")
+  QUIET    @map("quiet")
+  MENTIONS @map("mentions")
+}
+
+enum ModerationActionType {
+  HIDE    @map("hide")
+  WARN    @map("warn")
+  SUSPEND @map("suspend")
+  RESTORE @map("restore")
+}
+
+model User {
+  id                     String      @id @default(cuid())
+  email                  String?     @unique
+  displayName            String?
+  role                   String      @default("Member")
+  location               String?
+  avatarUrl              String?
+  acceptedCodeOfConductAt DateTime?
+  createdAt              DateTime    @default(now())
+  updatedAt              DateTime    @updatedAt
+
+  posts              Post[]
+  reactions          Reaction[]
+  reportsFiled       Report[]             @relation("reportsFiled")
+  sessions           Session[]
+  shareDrafts        ShareDraft[]
+  magicLinks         MagicLink[]
+  ownedGroups        Group[]              @relation("groupsOwned")
+  groupMemberships   GroupMembership[]
+  prayerRequests     PrayerRequest[]
+  moderationActions  ModerationAction[]
+}
+
+model Post {
+  id            String        @id @default(cuid())
+  reference     String
+  translation   String        @default("WEB")
+  reflection    String?
+  tags          String[]      @default([])
+  status        PostStatus    @default(PUBLISHED)
+  commentCount  Int           @default(0)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  authorId String
+  author   User          @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  reactions Reaction[]
+  reports   Report[]
+  shares    ShareDraft[]
+  moderationActions ModerationAction[]
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Reaction {
+  id        String       @id @default(cuid())
+  type      ReactionType
+  createdAt DateTime     @default(now())
+
+  postId String
+  userId String
+  post   Post           @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user   User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, userId, type])
+}
+
+model Report {
+  id        String    @id @default(cuid())
+  reason    String
+  status    ReportStatus @default(PENDING)
+  notes     String?
+  resolvedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  postId    String
+  reporterId String
+  post      Post      @relation(fields: [postId], references: [id], onDelete: Cascade)
+  reporter  User      @relation("reportsFiled", fields: [reporterId], references: [id], onDelete: Cascade)
+  actions   ModerationAction[]
+}
+
+model ShareDraft {
+  id          String   @id @default(cuid())
+  reference   String
+  reflection  String?
+  createdAt   DateTime @default(now())
+  submittedAt DateTime?
+
+  userId String
+  postId String?
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  post   Post?   @relation(fields: [postId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+}
+
+model PassageCache {
+  id          String   @id
+  reference   String
+  translation String   @default("WEB")
+  plainText   String
+  cachedAt    DateTime @default(now())
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  userId String
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+}
+
+model MagicLink {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  email     String
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  consumedAt DateTime?
+
+  userId String
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model OAuthState {
+  id         String       @id @default(cuid())
+  provider   AuthProvider
+  redirectTo String?
+  createdAt  DateTime     @default(now())
+  expiresAt  DateTime
+}
+
+model Group {
+  id              String   @id @default(cuid())
+  name            String
+  focus           String
+  scriptureAnchor String
+  description     String
+  ownerId         String
+  memberLimit     Int     @default(25)
+  isPrivate       Boolean @default(false)
+  tags            String[] @default([])
+  imageUrl        String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  lastActivityAt  DateTime @default(now())
+
+  owner         User             @relation("groupsOwned", fields: [ownerId], references: [id], onDelete: Cascade)
+  memberships   GroupMembership[]
+  requests      PrayerRequest[]
+
+  @@index([ownerId])
+  @@index([isPrivate])
+}
+
+model GroupMembership {
+  id            String                 @id @default(cuid())
+  groupId       String
+  userId        String
+  role          GroupRole              @default(MEMBER)
+  status        GroupMembershipStatus  @default(PENDING)
+  joinedAt      DateTime?
+  mutedUntil    DateTime?
+  notifications NotificationPreference @default(QUIET)
+  lastVisitedAt DateTime?
+  createdAt     DateTime               @default(now())
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, userId])
+  @@index([userId, status])
+}
+
+model PrayerRequest {
+  id             String   @id @default(cuid())
+  groupId        String
+  authorId       String
+  title          String
+  body           String?
+  reference      String?
+  createdAt      DateTime @default(now())
+  archivedAt     DateTime?
+  answeredAt     DateTime?
+  lastActivityAt DateTime @default(now())
+  reactionCounts Json     @default("{}")
+  reactionUserIds Json    @default("{}")
+
+  group  Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  author User  @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([groupId, createdAt])
+  @@index([archivedAt])
+}
+
+model ModerationAction {
+  id        String                @id @default(cuid())
+  postId    String
+  reportId  String?
+  actorId   String
+  action    ModerationActionType
+  notes     String?
+  createdAt DateTime              @default(now())
+
+  post   Post   @relation(fields: [postId], references: [id], onDelete: Cascade)
+  report Report? @relation(fields: [reportId], references: [id], onDelete: SetNull)
+  actor  User   @relation(fields: [actorId], references: [id], onDelete: Cascade)
+
+  @@index([postId, createdAt])
+  @@index([reportId])
+}
