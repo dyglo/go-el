@@ -1,5 +1,6 @@
 'use server';
 
+import { ModerationActionType } from '@prisma/client';
 import { z } from 'zod';
 import { ensureUserByEmail, getCurrentUser } from '@/lib/server/auth';
 import { moderateReport, type ModerationActionInput } from '@/lib/server/moderation';
@@ -10,22 +11,24 @@ const actionSchema = z.object({
   notes: z.string().max(280).optional(),
 });
 
-function resolveModerator() {
-  const user = getCurrentUser();
+async function resolveModerator() {
+  const user = await getCurrentUser();
   if (user) {
     return user;
   }
-  return ensureUserByEmail('abigail@goel.app');
+  return await ensureUserByEmail('abigail@goel.app');
 }
 
 export async function moderateReportAction(input: z.infer<typeof actionSchema>) {
-  const moderator = resolveModerator();
+  const moderator = await resolveModerator();
   const parsed = actionSchema.parse(input);
+  const actionKey = parsed.action.toUpperCase() as keyof typeof ModerationActionType;
+  const action = ModerationActionType[actionKey];
 
-  const report = moderateReport({
+  const report = await moderateReport({
     reportId: parsed.reportId,
     actorId: moderator.id,
-    action: parsed.action as ModerationActionInput['action'],
+    action: action as ModerationActionInput['action'],
     notes: parsed.notes?.trim() ? parsed.notes.trim() : undefined,
   });
 

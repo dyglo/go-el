@@ -1,10 +1,10 @@
-﻿import { FeedClient } from './feed-client';
+import { FeedClient } from './feed-client';
 import { getFeedPosts } from '@/lib/server/posts';
 import { getWebPassageByReference } from '@/lib/scripture';
 import { getCurrentUser } from '@/lib/server/auth';
 
 export default async function FeedPage() {
-  const viewer = getCurrentUser();
+  const viewer = await getCurrentUser();
   const [posts, dailyFocus] = await Promise.all([
     getFeedPosts(viewer?.id),
     getWebPassageByReference('Hebrews 3:13'),

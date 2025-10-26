@@ -2,44 +2,25 @@
 
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
-import { createShare, searchScripture } from '@/lib/server/posts';
-import { parseReference, getWebPassageByReference } from '@/lib/scripture';
-
-const searchSchema = z.string().min(2, 'Please enter at least two characters.');
+import { createShare } from '@/lib/server/posts';
 
 const shareSchema = z.object({
   userId: z.string().min(1, 'Missing user'),
-  reference: z.string().min(3, 'Select a scripture reference.'),
-  reflection: z.string().max(160).optional(),
-  includeReflection: z.boolean().optional(),
+  reference: z.string().min(3, 'Please add a Scripture reference.'),
+  passageText: z
+    .string()
+    .min(12, 'Include the verse text you wish to share.')
+    .max(1200, 'Passage text should remain under 1,200 characters.'),
+  testimony: z
+    .string()
+    .max(600, 'Your testimony can be at most 600 characters.')
+    .optional(),
+  tags: z.array(z.string()).optional(),
 });
-
-const previewSchema = z.string().min(3);
-
-export async function searchScriptureAction(query: string) {
-  const parsed = searchSchema.safeParse(query.trim());
-  if (!parsed.success) {
-    return [];
-  }
-
-  return searchScripture(parsed.data, 12);
-}
-
-export async function getPassagePreviewAction(reference: string) {
-  const parsed = previewSchema.parse(reference);
-  return getWebPassageByReference(parsed);
-}
 
 export async function createShareAction(input: z.infer<typeof shareSchema>) {
   const parsed = shareSchema.parse(input);
-  const reference = parseReference(parsed.reference);
-
-  const post = await createShare({
-    userId: parsed.userId,
-    reference,
-    reflection: parsed.includeReflection ? parsed.reflection : undefined,
-  });
-
+  const post = await createShare(parsed);
   revalidatePath('/feed');
   return post;
 }

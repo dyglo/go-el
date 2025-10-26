@@ -1,29 +1,62 @@
-﻿import { randomUUID } from 'crypto';
-import { scriptureRegistry, parseReference, formatReference, bookFromSlug } from '@/lib/scripture';
-import type { Passage, PassageReference, ScriptureSearchResult, TranslationCode } from '@/lib/scripture';
-import { getDatabase, type PostRecord, type ReactionType, type ShareDraftRecord, type UserRecord } from './db';
-import { ensureSeedData } from './seed';
+"use server";
+
+import {
+  Prisma,
+  PostStatus,
+  ReportStatus,
+  ReactionType as PrismaReactionType,
+  type Reaction,
+  type Report,
+  type User,
+} from '@prisma/client';
+import { prisma } from './prisma';
+import type { Passage, PassageReference } from '@/lib/scripture';
+import { bookFromSlug, scriptureRegistry } from '@/lib/scripture';
+
+type ReactionLabel = 'amen' | 'praying';
+export type ReactionType = ReactionLabel;
+
+type PostWithRelations = {
+  id: string;
+  reference: string;
+  passageText: string;
+  reflection: string | null;
+  tags: string[];
+  status: PostStatus;
+  commentCount: number;
+  createdAt: Date;
+  authorId: string;
+  author: User;
+  reactions: Reaction[];
+  reports: Report[];
+};
 
 export type FeedPost = {
   id: string;
-  passage: Passage;
+  reference: string;
+  passageText: string;
   reflection?: string;
   tags: string[];
-  author: Pick<UserRecord, 'id' | 'name' | 'role' | 'location'>;
+  author: {
+    id: string;
+    name: string;
+    role?: string | null;
+    location?: string | null;
+  };
   createdAt: string;
   commentCount: number;
   reactions: {
     counts: Record<ReactionType, number>;
     viewer: ReactionType[];
   };
-  translation: TranslationCode;
   reportCount: number;
 };
 
 export type SharePayload = {
   userId: string;
-  reference: PassageReference;
-  reflection?: string;
+  reference: string;
+  passageText: string;
+  testimony?: string;
   tags?: string[];
 };
 
@@ -33,184 +66,246 @@ export type ReportPayload = {
   reason: string;
 };
 
-const DEFAULT_VIEWER_ID = 'viewer_guest';
+const REACTION_LABELS: ReactionLabel[] = ['amen', 'praying'];
 
-function createId(prefix: string, length = 12) {
-  return `${prefix}_${randomUUID().replace(/-/g, '').slice(0, length)}`;
+const reactionLabelToPrisma: Record<ReactionLabel, PrismaReactionType> = {
+  amen: PrismaReactionType.AMEN,
+  praying: PrismaReactionType.PRAYING,
+};
+
+const prismaReactionToLabel: Record<PrismaReactionType, ReactionLabel> = {
+  [PrismaReactionType.AMEN]: 'amen',
+  [PrismaReactionType.PRAYING]: 'praying',
+};
+
+function ensureUserName(user: User | null): string {
+  if (!user) {
+    return 'Member';
+  }
+  return user.displayName ?? user.email ?? 'Member';
 }
 
-function resolveViewerId(viewerId?: string) {
-  return viewerId ?? DEFAULT_VIEWER_ID;
+type PostStatusLabel = 'published' | 'flagged' | 'archived';
+type ReportStatusLabel = 'pending' | 'in_review' | 'actioned' | 'dismissed';
+
+function toPostStatusLabel(status: PostStatus): PostStatusLabel {
+  return status.toLowerCase() as PostStatusLabel;
 }
 
-async function toFeedPost(record: PostRecord, viewerId?: string): Promise<FeedPost> {
-  const db = getDatabase();
-  const author = db.users.get(record.authorId);
-  const reference = parseReference(record.reference);
-  const passage = await scriptureRegistry.getPassage(record.translation, reference);
+function toReportStatusLabel(status: ReportStatus): ReportStatusLabel {
+  return status.toLowerCase() as ReportStatusLabel;
+}
 
-  if (!author) {
-    throw new Error(`Author ${record.authorId} missing for post ${record.id}.`);
-  }
+function emptyReactionCounts(): Record<ReactionLabel, number> {
+  return REACTION_LABELS.reduce<Record<ReactionLabel, number>>((acc, label) => {
+    acc[label] = 0;
+    return acc;
+  }, { amen: 0, praying: 0 });
+}
 
-  if (!passage) {
-    throw new Error(`Unable to load passage for ${record.reference}.`);
-  }
+function toFeedPost(post: PostWithRelations, viewerId?: string): FeedPost {
+  const counts = emptyReactionCounts();
+  const viewerReactions = new Set<ReactionLabel>();
 
-  const viewerReactions: ReactionType[] = [];
-  const resolvedViewer = resolveViewerId(viewerId);
-  (['amen', 'praying'] as ReactionType[]).forEach((reaction) => {
-    const set = record.reactionUserIds[reaction];
-    if (set.has(resolvedViewer)) {
-      viewerReactions.push(reaction);
+  post.reactions.forEach((reaction) => {
+    const label = prismaReactionToLabel[reaction.type as PrismaReactionType];
+    counts[label] += 1;
+    if (viewerId && reaction.userId === viewerId) {
+      viewerReactions.add(label);
     }
   });
 
+  const authorName = ensureUserName(post.author);
+
   return {
-    id: record.id,
-    passage,
-    reflection: record.reflection,
-    tags: record.tags,
+    id: post.id,
+    reference: post.reference,
+    passageText: post.passageText,
+    reflection: post.reflection ?? undefined,
+    tags: post.tags ?? [],
     author: {
-      id: author.id,
-      name: author.name,
-      role: author.role,
-      location: author.location,
+      id: post.authorId,
+      name: authorName,
+      role: post.author.role,
+      location: post.author.location ?? undefined,
     },
-    createdAt: record.createdAt,
-    commentCount: record.commentCount,
+    createdAt: post.createdAt.toISOString(),
+    commentCount: post.commentCount,
     reactions: {
-      counts: record.reactionCounts,
-      viewer: viewerReactions,
+      counts,
+      viewer: Array.from(viewerReactions.values()),
     },
-    translation: record.translation,
-    reportCount: record.reportUserIds.size,
+    reportCount: post.reports.length,
   };
 }
 
 export async function getFeedPosts(viewerId?: string): Promise<FeedPost[]> {
-  ensureSeedData();
-  const db = getDatabase();
-  const posts = Array.from(db.posts.values()).filter((post) => post.status === 'published');
+  const posts = await prisma.post.findMany({
+    where: { status: PostStatus.PUBLISHED },
+    orderBy: { createdAt: 'desc' },
+    include: {
+      author: true,
+      reactions: true,
+      reports: true,
+    },
+  });
 
-  posts.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
-
-  return Promise.all(posts.map((post) => toFeedPost(post, viewerId)));
+  return posts.map((post) => toFeedPost(post, viewerId));
 }
 
-export async function toggleReaction(postId: string, reaction: ReactionType, viewerId?: string) {
-  ensureSeedData();
-  const db = getDatabase();
-  const post = db.posts.get(postId);
+export async function createShare(payload: SharePayload): Promise<FeedPost> {
+  const reference = payload.reference.trim();
+  const passageText = payload.passageText.trim();
+  if (!reference) {
+    throw new Error('Please provide a Scripture reference.');
+  }
+  if (!passageText) {
+    throw new Error('Please include the verse text you wish to share.');
+  }
 
+  const reflection = payload.testimony?.trim() ? payload.testimony.trim() : null;
+
+  const createdPost = await prisma.post.create({
+    data: {
+      authorId: payload.userId,
+      reference,
+      passageText,
+      translation: 'USER',
+      reflection,
+      tags: payload.tags ?? [],
+      status: PostStatus.PUBLISHED,
+      shares: {
+        create: {
+          userId: payload.userId,
+          reference,
+          passageText,
+          reflection,
+        },
+      },
+    },
+    include: {
+      author: true,
+      reactions: true,
+      reports: true,
+    },
+  });
+
+  return toFeedPost(createdPost, payload.userId);
+}
+
+export async function toggleReaction(postId: string, reaction: ReactionType, viewerId: string) {
+  const post = await prisma.post.findUnique({ where: { id: postId } });
   if (!post) {
-    throw new Error(`Post ${postId} not found.`);
+    throw new Error('Post not found.');
   }
 
-  const resolvedViewer = resolveViewerId(viewerId);
-  const reactionSet = post.reactionUserIds[reaction];
-
-  if (!reactionSet) {
-    throw new Error(`Reaction ${reaction} not initialized for post ${postId}.`);
+  const user = await prisma.user.findUnique({ where: { id: viewerId } });
+  if (!user) {
+    throw new Error('User not found.');
   }
 
-  if (reactionSet.has(resolvedViewer)) {
-    reactionSet.delete(resolvedViewer);
-    post.reactionCounts[reaction] = Math.max(0, post.reactionCounts[reaction] - 1);
+  const prismaType = reactionLabelToPrisma[reaction];
+
+  const existing = await prisma.reaction.findUnique({
+    where: {
+      postId_userId_type: {
+        postId,
+        userId: viewerId,
+        type: prismaType,
+      },
+    },
+  });
+
+  if (existing) {
+    await prisma.reaction.delete({ where: { id: existing.id } });
   } else {
-    reactionSet.add(resolvedViewer);
-    post.reactionCounts[reaction] += 1;
+    try {
+      await prisma.reaction.create({
+        data: {
+          postId,
+          userId: viewerId,
+          type: prismaType,
+        },
+      });
+    } catch (error) {
+      if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') {
+        throw error;
+      }
+    }
+  }
+
+  const [groupCounts, viewerReactions] = await Promise.all([
+    prisma.reaction.groupBy({
+      by: ['type'],
+      _count: { _all: true },
+      where: { postId },
+    }),
+    prisma.reaction.findMany({
+      where: { postId, userId: viewerId },
+      select: { type: true },
+    }),
+  ]);
+
+  const counts = emptyReactionCounts();
+  for (const item of groupCounts) {
+    const label = prismaReactionToLabel[item.type as PrismaReactionType];
+    counts[label] = item._count._all;
   }
 
   return {
-    counts: post.reactionCounts,
-    viewer: (['amen', 'praying'] as ReactionType[]).filter((type) => post.reactionUserIds[type].has(resolvedViewer)),
+    counts,
+    viewer: viewerReactions.map((item) => prismaReactionToLabel[item.type as PrismaReactionType]),
   };
 }
 
 export async function reportPost(payload: ReportPayload) {
-  ensureSeedData();
-  const db = getDatabase();
-  const post = db.posts.get(payload.postId);
+  const post = await prisma.post.findUnique({
+    where: { id: payload.postId },
+    include: { reports: { select: { reporterId: true } } },
+  });
   if (!post) {
-    throw new Error(`Cannot report missing post ${payload.postId}.`);
+    throw new Error('Cannot report a post that does not exist.');
   }
 
-  post.reportUserIds.add(payload.reporterId);
-  const reportId = createId('report', 10);
-  const createdAt = new Date().toISOString();
-  db.reports.set(reportId, {
-    id: reportId,
-    postId: payload.postId,
-    reporterId: payload.reporterId,
-    reason: payload.reason,
-    createdAt,
-    status: 'pending',
+  const reporter = await prisma.user.findUnique({ where: { id: payload.reporterId } });
+  if (!reporter) {
+    throw new Error('Reporter account missing.');
+  }
+
+  const report = await prisma.report.create({
+    data: {
+      postId: payload.postId,
+      reporterId: payload.reporterId,
+      reason: payload.reason,
+      status: ReportStatus.PENDING,
+    },
   });
 
-  if (post.reportUserIds.size >= 3 && post.status === 'published') {
-    post.status = 'flagged';
+  const reporterIds = new Set(post.reports.map((item) => item.reporterId));
+  reporterIds.add(payload.reporterId);
+
+  let nextStatus = post.status;
+  if (reporterIds.size >= 3 && post.status === PostStatus.PUBLISHED) {
+    const updated = await prisma.post.update({
+      where: { id: post.id },
+      data: { status: PostStatus.FLAGGED },
+      select: { status: true },
+    });
+    nextStatus = updated.status;
   }
 
   return {
-    reportId,
-    totalReports: post.reportUserIds.size,
-    status: post.status,
-    reportStatus: 'pending' as const,
+    reportId: report.id,
+    totalReports: reporterIds.size,
+    status: toPostStatusLabel(nextStatus),
+    reportStatus: toReportStatusLabel(report.status),
   };
-}
-
-export async function createShare(payload: SharePayload) {
-  ensureSeedData();
-  const db = getDatabase();
-
-  const user = db.users.get(payload.userId);
-  if (!user) {
-    throw new Error(`Cannot share Scripture for unknown user ${payload.userId}.`);
-  }
-
-  const referenceLabel = formatReference(payload.reference);
-  const postId = createId('post', 12);
-
-  const newRecord: PostRecord = {
-    id: postId,
-    authorId: user.id,
-    reference: referenceLabel,
-    translation: 'WEB',
-    reflection: payload.reflection?.trim() || undefined,
-    tags: payload.tags ?? [],
-    createdAt: new Date().toISOString(),
-    commentCount: 0,
-    reactionCounts: { amen: 0, praying: 0 },
-    reactionUserIds: { amen: new Set<string>(), praying: new Set<string>() },
-    reportUserIds: new Set<string>(),
-    status: 'published',
-  };
-
-  db.posts.set(newRecord.id, newRecord);
-
-  const draft: ShareDraftRecord = {
-    id: createId('share', 12),
-    userId: payload.userId,
-    reference: referenceLabel,
-    reflection: payload.reflection,
-    createdAt: new Date().toISOString(),
-    submittedAt: newRecord.createdAt,
-  };
-
-  db.shares.set(draft.id, draft);
-
-  return toFeedPost(newRecord, payload.userId);
-}
-
-export async function searchScripture(query: string, limit = 12): Promise<ScriptureSearchResult[]> {
-  ensureSeedData();
-  return scriptureRegistry.search('WEB', query, { limit });
 }
 
 export async function getPassageFromId(id: string): Promise<Passage | null> {
-  ensureSeedData();
-  const match = id.match(/^(?<bookSlug>[a-z0-9-]+)-(?<chapter>\d+)-(?<start>\d+)(?:-(?<end>\d+))?$/i);
+  const match = id.match(
+    /^(?<bookSlug>[a-z0-9-]+)-(?<chapter>\d+)-(?<start>\d+)(?:-(?<end>\d+))?$/i
+  );
   if (!match?.groups) {
     return null;
   }

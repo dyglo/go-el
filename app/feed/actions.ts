@@ -3,12 +3,12 @@
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { reportPost, toggleReaction } from '@/lib/server/posts';
-import type { ReactionType } from '@/lib/server/db';
+import type { ReactionType } from '@/lib/server/posts';
 
 const toggleSchema = z.object({
   postId: z.string().min(1),
   reaction: z.enum(['amen', 'praying']),
-  viewerId: z.string().optional(),
+  viewerId: z.string().min(1, 'Missing viewer'),
 });
 
 const reportSchema = z.object({
@@ -20,7 +20,7 @@ const reportSchema = z.object({
 export async function toggleReactionAction(input: {
   postId: string;
   reaction: ReactionType;
-  viewerId?: string;
+  viewerId: string;
 }) {
   const parsed = toggleSchema.parse(input);
   const result = await toggleReaction(parsed.postId, parsed.reaction, parsed.viewerId);

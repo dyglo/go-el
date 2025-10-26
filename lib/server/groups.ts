@@ -1,11 +1,12 @@
-import { randomUUID } from 'crypto';
+"use server";
+
+import type { Group, GroupMembership, PrayerRequest, User } from '@prisma/client';
 import {
-  getDatabase,
-  type GroupMembershipRecord,
-  type GroupRecord,
-  type PrayerRequestRecord,
-} from './db';
-import { ensureSeedData } from './seed';
+  GroupMembershipStatus,
+  GroupRole,
+  NotificationPreference as PrismaNotificationPreference,
+} from '@prisma/client';
+import { prisma } from './prisma';
 
 const THIRTY_DAYS_MS = 1000 * 60 * 60 * 24 * 30;
 
@@ -37,11 +38,14 @@ export type PrayerGroupSummary = {
   previewRequests: PrayerRequestPreview[];
 };
 
+type MembershipRoleLabel = 'owner' | 'facilitator' | 'member';
+type NotificationPreferenceLabel = 'all' | 'quiet' | 'mentions';
+
 export type GroupMembershipView = {
   id: string;
   status: ViewerGroupStatus;
-  role: GroupMembershipRecord['role'];
-  notifications: GroupMembershipRecord['notifications'];
+  role: MembershipRoleLabel;
+  notifications: NotificationPreferenceLabel;
   joinedAt?: string;
   lastVisitedAt?: string;
 };
@@ -99,128 +103,171 @@ export type TogglePrayerReactionResult = {
   viewerHasPrayed: boolean;
 };
 
-function createId(prefix: string, slice = 10) {
-  return `${prefix}_${randomUUID().replace(/-/g, '').slice(0, slice)}`;
+type ReactionJson = Record<'praying', number>;
+type ReactionUserMap = Record<'praying', string[]>;
+
+function mapStatus(status?: GroupMembershipStatus | null): ViewerGroupStatus {
+  if (!status) {
+    return 'guest';
+  }
+  switch (status) {
+    case GroupMembershipStatus.MEMBER:
+      return 'member';
+    case GroupMembershipStatus.PENDING:
+      return 'pending';
+    case GroupMembershipStatus.SUSPENDED:
+      return 'suspended';
+    default:
+      return 'guest';
+  }
 }
 
-function findMembership(groupId: string, userId: string): GroupMembershipRecord | null {
-  const db = getDatabase();
-  for (const membership of Array.from(db.groupMemberships.values())) {
-    if (membership.groupId === groupId && membership.userId === userId) {
-      return membership;
+function toRoleLabel(role: GroupRole): MembershipRoleLabel {
+  switch (role) {
+    case GroupRole.OWNER:
+      return 'owner';
+    case GroupRole.FACILITATOR:
+      return 'facilitator';
+    default:
+      return 'member';
+  }
+}
+
+function toNotificationLabel(notification: PrismaNotificationPreference): NotificationPreferenceLabel {
+  switch (notification) {
+    case PrismaNotificationPreference.ALL:
+      return 'all';
+    case PrismaNotificationPreference.MENTIONS:
+      return 'mentions';
+    default:
+      return 'quiet';
+  }
+}
+
+function parseCounts(value: unknown, fallback: ReactionJson): ReactionJson {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    return {
+      praying: typeof record.praying === 'number' ? (record.praying as number) : fallback.praying,
+    };
+  }
+  if (typeof value === 'string') {
+    try {
+      return parseCounts(JSON.parse(value), fallback);
+    } catch (error) {
+      return fallback;
     }
   }
-  return null;
+  return fallback;
 }
 
-function applyArchivePolicy(request: PrayerRequestRecord, nowMs: number) {
-  if (request.archivedAt) {
-    return;
+function parseUserIds(value: unknown, fallback: ReactionUserMap): ReactionUserMap {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    const praying = record.praying;
+    if (Array.isArray(praying) && praying.every((item) => typeof item === 'string')) {
+      return { praying: praying as string[] };
+    }
   }
-  const createdAtMs = new Date(request.createdAt).getTime();
-  if (Number.isNaN(createdAtMs)) {
-    return;
+  if (typeof value === 'string') {
+    try {
+      return parseUserIds(JSON.parse(value), fallback);
+    } catch (error) {
+      return fallback;
+    }
   }
-  if (nowMs - createdAtMs >= THIRTY_DAYS_MS) {
-    const archivedAt = new Date(createdAtMs + THIRTY_DAYS_MS).toISOString();
-    request.archivedAt = archivedAt;
-    request.lastActivityAt = archivedAt;
-  }
+  return fallback;
 }
 
-function toMembershipView(record: GroupMembershipRecord | null, fallbackStatus: ViewerGroupStatus = 'guest'): GroupMembershipView {
-  if (!record) {
+function ensureUserName(user: User | null | undefined): string {
+  if (!user) {
+    return 'Member';
+  }
+  return user.displayName ?? user.email ?? 'Member';
+}
+
+function toMembershipView(membership: GroupMembership | null): GroupMembershipView {
+  if (!membership) {
     return {
       id: 'guest',
-      status: fallbackStatus,
+      status: 'guest',
       role: 'member',
       notifications: 'quiet',
     };
   }
+
   return {
-    id: record.id,
-    status: record.status,
-    role: record.role,
-    notifications: record.notifications,
-    joinedAt: record.joinedAt,
-    lastVisitedAt: record.lastVisitedAt,
+    id: membership.id,
+    status: mapStatus(membership.status),
+    role: toRoleLabel(membership.role),
+    notifications: toNotificationLabel(membership.notifications),
+    joinedAt: membership.joinedAt ? membership.joinedAt.toISOString() : undefined,
+    lastVisitedAt: membership.lastVisitedAt ? membership.lastVisitedAt.toISOString() : undefined,
   };
 }
 
-function toRequestView(
-  request: PrayerRequestRecord,
-  viewerId: string | null | undefined
+function toPrayerRequestView(
+  request: PrayerRequest & { author: User },
+  viewerId: string
 ): PrayerRequestView {
-  const db = getDatabase();
-  const author = db.users.get(request.authorId);
-  const viewerHasPrayed = viewerId ? request.reactionUserIds.praying.has(viewerId) : false;
+  const counts = parseCounts(request.reactionCounts, { praying: 0 });
+  const userIds = parseUserIds(request.reactionUserIds, { praying: [] });
+  const prayingUsers = new Set(userIds.praying ?? []);
+
   return {
     id: request.id,
     title: request.title,
-    body: request.body,
-    reference: request.reference,
-    createdAt: request.createdAt,
-    archivedAt: request.archivedAt,
+    body: request.body ?? undefined,
+    reference: request.reference ?? undefined,
+    createdAt: request.createdAt.toISOString(),
+    archivedAt: request.archivedAt ? request.archivedAt.toISOString() : undefined,
     author: {
-      id: author?.id ?? request.authorId,
-      name: author?.name ?? author?.email ?? 'Member',
-      role: author?.role ?? null,
+      id: request.authorId,
+      name: ensureUserName(request.author),
+      role: request.author.role,
     },
-    prayingCount: request.reactionCounts.praying,
-    viewerHasPrayed,
+    prayingCount: counts.praying ?? 0,
+    viewerHasPrayed: prayingUsers.has(viewerId),
   };
 }
 
-function deriveViewerStatus(membership: GroupMembershipRecord | null): ViewerGroupStatus {
-  if (!membership) {
-    return 'guest';
-  }
-  if (membership.status === 'member') {
-    return 'member';
-  }
-  if (membership.status === 'pending') {
-    return 'pending';
-  }
-  return 'suspended';
+function toPreview(request: PrayerRequest & { author: User }): PrayerRequestPreview {
+  const counts = parseCounts(request.reactionCounts, { praying: 0 });
+  return {
+    id: request.id,
+    title: request.title,
+    createdAt: request.createdAt.toISOString(),
+    archivedAt: request.archivedAt ? request.archivedAt.toISOString() : undefined,
+    prayingCount: counts.praying ?? 0,
+    authorName: ensureUserName(request.author),
+  };
 }
 
-function buildSummary(
-  group: GroupRecord,
-  viewerId: string | null | undefined,
-  nowMs: number
+function toSummary(
+  group: Group & {
+    memberships: (GroupMembership & { user: User })[];
+    requests: (PrayerRequest & { author: User })[];
+  },
+  viewerId: string
 ): PrayerGroupSummary {
-  const db = getDatabase();
-  const membership = viewerId ? findMembership(group.id, viewerId) : null;
-  const viewerStatus = deriveViewerStatus(membership);
+  const memberCount = group.memberships.filter(
+    (membership) => membership.status === GroupMembershipStatus.MEMBER
+  ).length;
+  const pendingCount = group.memberships.filter(
+    (membership) => membership.status === GroupMembershipStatus.PENDING
+  ).length;
+  const viewerMembership = group.memberships.find((membership) => membership.userId === viewerId) ?? null;
+  const facilitators = group.memberships
+    .filter((membership) => membership.role !== GroupRole.MEMBER)
+    .map((membership) => ({
+      id: membership.userId,
+      name: ensureUserName(membership.user),
+    }));
 
-  const facilitatorList = Array.from(group.facilitatorIds).map((id) => {
-    const user = db.users.get(id);
-    return {
-      id,
-      name: user?.name ?? user?.email ?? 'Facilitator',
-    };
-  });
-
-  const requests = Array.from(group.requestIds)
-    .map((requestId) => db.prayerRequests.get(requestId))
-    .filter((request): request is PrayerRequestRecord => Boolean(request));
-
-  const previews = requests
-    .map((request) => {
-      applyArchivePolicy(request, nowMs);
-      const author = db.users.get(request.authorId);
-      return {
-        id: request.id,
-        title: request.title,
-        createdAt: request.createdAt,
-        archivedAt: request.archivedAt,
-        prayingCount: request.reactionCounts.praying,
-        authorName: author?.name ?? author?.email ?? 'Member',
-      };
-    })
-    .filter((preview) => !preview.archivedAt)
-    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
-    .slice(0, 2);
+  const previewRequests = group.requests
+    .filter((request) => !request.archivedAt)
+    .slice(0, 3)
+    .map((request) => toPreview(request));
 
   return {
     id: group.id,
@@ -228,241 +275,155 @@ function buildSummary(
     focus: group.focus,
     scriptureAnchor: group.scriptureAnchor,
     description: group.description,
-    memberCount: group.memberIds.size,
+    memberCount,
     memberLimit: group.memberLimit,
-    pendingCount: group.pendingMemberIds.size,
-    viewerStatus,
+    pendingCount,
+    viewerStatus: mapStatus(viewerMembership?.status),
     isPrivate: group.isPrivate,
-    tags: group.tags,
-    lastActivityAt: group.lastActivityAt,
-    facilitators: facilitatorList,
-    previewRequests: previews,
+    tags: group.tags ?? [],
+    lastActivityAt: group.lastActivityAt.toISOString(),
+    facilitators,
+    previewRequests,
   };
 }
 
-function deriveTypingIndicators(
-  group: GroupRecord,
-  viewerId: string | null | undefined,
-  nowMs: number
-): TypingIndicator[] {
-  const db = getDatabase();
-  const indicators: TypingIndicator[] = [];
-
-  for (const membership of Array.from(db.groupMemberships.values())) {
-    if (membership.groupId !== group.id) {
-      continue;
-    }
-    if (membership.status !== 'member') {
-      continue;
-    }
-    if (viewerId && membership.userId === viewerId) {
-      continue;
-    }
-    if (!membership.lastVisitedAt) {
-      continue;
-    }
-    const lastVisitedMs = new Date(membership.lastVisitedAt).getTime();
-    if (Number.isNaN(lastVisitedMs)) {
-      continue;
-    }
-    const minutesSinceVisit = (nowMs - lastVisitedMs) / (1000 * 60);
-    if (minutesSinceVisit > 15) {
-      continue;
-    }
-    const user = db.users.get(membership.userId);
-    if (!user) {
-      continue;
-    }
-    indicators.push({
-      id: user.id,
-      name: user.name ?? user.email ?? 'Member',
-      role: user.role ?? undefined,
-      tone: minutesSinceVisit < 5 ? 'typing' : 'praying',
-    });
-  }
-
-  return indicators.slice(0, 3);
-}
-
-export function getPrayerGroupDirectory(viewerId?: string | null): PrayerGroupSummary[] {
-  ensureSeedData();
-  const db = getDatabase();
-  const nowMs = Date.now();
-
-  const groups = Array.from(db.groups.values()).sort((a, b) =>
-    a.lastActivityAt < b.lastActivityAt ? 1 : -1
-  );
-
-  return groups.map((group) => buildSummary(group, viewerId ?? null, nowMs));
-}
-
-export function getPrayerGroupDetail(
-  groupId: string,
-  viewerId?: string | null
-): PrayerGroupDetail {
-  ensureSeedData();
-  const db = getDatabase();
-  const nowMs = Date.now();
-  const group = db.groups.get(groupId);
+async function getGroupContext(groupId: string, viewerId: string) {
+  const group = await prisma.group.findUnique({
+    where: { id: groupId },
+    include: {
+      memberships: {
+        include: { user: true },
+      },
+      requests: {
+        include: { author: true },
+        orderBy: { createdAt: 'desc' },
+      },
+    },
+  });
   if (!group) {
     throw new Error('Prayer group not found.');
   }
+  const memberCount = group.memberships.filter(
+    (membership) => membership.status === GroupMembershipStatus.MEMBER
+  ).length;
+  return {
+    group,
+    summary: toSummary(group, viewerId),
+    memberCount,
+  };
+}
 
-  const membershipRecord = viewerId ? findMembership(groupId, viewerId) : null;
-  const membershipView = toMembershipView(membershipRecord);
-
-  if (membershipRecord) {
-    membershipRecord.lastVisitedAt = new Date().toISOString();
-  }
-
-  const requests = Array.from(group.requestIds)
-    .map((requestId) => db.prayerRequests.get(requestId))
-    .filter((request): request is PrayerRequestRecord => Boolean(request));
-
-  const activeRequests: PrayerRequestView[] = [];
-  const archivedRequests: PrayerRequestView[] = [];
-
-  requests.forEach((request) => {
-    applyArchivePolicy(request, nowMs);
-    const view = toRequestView(request, viewerId);
-    if (request.archivedAt) {
-      archivedRequests.push(view);
-    } else {
-      activeRequests.push(view);
-    }
+export async function getPrayerGroupDirectory(viewerId: string): Promise<PrayerGroupSummary[]> {
+  const groups = await prisma.group.findMany({
+    orderBy: { lastActivityAt: 'desc' },
+    include: {
+      memberships: {
+        include: { user: true },
+      },
+      requests: {
+        include: { author: true },
+        orderBy: { createdAt: 'desc' },
+      },
+    },
   });
+  return groups.map((group) => toSummary(group, viewerId));
+}
 
-  activeRequests.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
-  archivedRequests.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+export async function getPrayerGroupDetail(
+  groupId: string,
+  viewerId: string
+): Promise<PrayerGroupDetail> {
+  const { group, summary, memberCount } = await getGroupContext(groupId, viewerId);
+  const viewerMembership =
+    group.memberships.find((membership) => membership.userId === viewerId) ?? null;
 
-  const summary = buildSummary(group, viewerId ?? null, nowMs);
-  const typing = deriveTypingIndicators(group, viewerId ?? null, nowMs);
+  const activeRequests = group.requests
+    .filter((request) => !request.archivedAt)
+    .map((request) => toPrayerRequestView(request, viewerId));
+
+  const archivedRequests = group.requests
+    .filter((request) => Boolean(request.archivedAt))
+    .map((request) => toPrayerRequestView(request, viewerId));
 
   return {
     summary,
-    membership: membershipView,
+    membership: toMembershipView(viewerMembership),
     requests: activeRequests,
     archivedRequests,
-    typing,
-    capacityFull: group.memberIds.size >= group.memberLimit,
+    typing: [],
+    capacityFull: memberCount >= group.memberLimit,
   };
 }
 
-export function requestGroupMembership(
-  groupId: string,
-  userId: string
-): JoinGroupResult {
-  ensureSeedData();
-  const db = getDatabase();
-  const group = db.groups.get(groupId);
-  if (!group) {
-    throw new Error('Unable to join a missing group.');
-  }
+export async function requestGroupMembership(groupId: string, userId: string): Promise<JoinGroupResult> {
+  return prisma.$transaction(async (tx) => {
+    const group = await tx.group.findUnique({
+      where: { id: groupId },
+      include: {
+        memberships: true,
+      },
+    });
+    if (!group) {
+      throw new Error('Prayer group not found.');
+    }
 
-  const nowIso = new Date().toISOString();
-  const membership = findMembership(groupId, userId);
+    const existing = group.memberships.find((membership) => membership.userId === userId) ?? null;
+    const memberCount = group.memberships.filter(
+      (membership) => membership.status === GroupMembershipStatus.MEMBER
+    ).length;
+    const capacityFull = memberCount >= group.memberLimit;
 
-  if (membership && membership.status === 'member') {
-    return {
-      status: 'member',
-      requiresApproval: false,
-      membership: toMembershipView(membership),
-    };
-  }
-
-  if (group.memberIds.size >= group.memberLimit && !group.memberIds.has(userId)) {
-    return {
-      status: membership ? deriveViewerStatus(membership) : 'guest',
-      requiresApproval: false,
-      capacityFull: true,
-      membership: membership ? toMembershipView(membership) : null,
-    };
-  }
-
-  if (group.isPrivate) {
-    if (!membership) {
-      const newMembership: GroupMembershipRecord = {
-        id: createId('membership'),
-        groupId,
-        userId,
-        role: 'member',
-        status: 'pending',
-        notifications: 'quiet',
-      };
-      db.groupMemberships.set(newMembership.id, newMembership);
-      group.pendingMemberIds.add(userId);
-      group.updatedAt = nowIso;
+    if (existing) {
       return {
-        status: 'pending',
-        requiresApproval: true,
-        membership: toMembershipView(newMembership),
+        status: mapStatus(existing.status),
+        requiresApproval: existing.status !== GroupMembershipStatus.MEMBER && group.isPrivate,
+        capacityFull,
+        membership: toMembershipView(existing),
       };
     }
 
-    membership.status = 'pending';
-    membership.notifications = membership.notifications ?? 'quiet';
-    membership.lastVisitedAt = nowIso;
-    group.pendingMemberIds.add(userId);
-    group.memberIds.delete(userId);
-    group.updatedAt = nowIso;
+    if (capacityFull) {
+      return {
+        status: 'guest',
+        requiresApproval: false,
+        capacityFull: true,
+        membership: null,
+      };
+    }
+
+    const status = group.isPrivate ? GroupMembershipStatus.PENDING : GroupMembershipStatus.MEMBER;
+    const membership = await tx.groupMembership.create({
+      data: {
+        groupId,
+        userId,
+        status,
+        joinedAt: status === GroupMembershipStatus.MEMBER ? new Date() : undefined,
+        role: GroupRole.MEMBER,
+        notifications: PrismaNotificationPreference.QUIET,
+      },
+    });
+
     return {
-      status: 'pending',
-      requiresApproval: true,
+      status: mapStatus(membership.status),
+      requiresApproval: group.isPrivate && membership.status !== GroupMembershipStatus.MEMBER,
+      capacityFull: false,
       membership: toMembershipView(membership),
     };
-  }
-
-  if (!membership) {
-    const record: GroupMembershipRecord = {
-      id: createId('membership'),
-      groupId,
-      userId,
-      role: group.facilitatorIds.has(userId) ? 'facilitator' : 'member',
-      status: 'member',
-      notifications: 'quiet',
-      joinedAt: nowIso,
-      lastVisitedAt: nowIso,
-    };
-    db.groupMemberships.set(record.id, record);
-    group.memberIds.add(userId);
-    group.pendingMemberIds.delete(userId);
-    group.lastActivityAt = nowIso;
-    group.updatedAt = nowIso;
-    return {
-      status: 'member',
-      requiresApproval: false,
-      membership: toMembershipView(record),
-    };
-  }
-
-  membership.status = 'member';
-  membership.joinedAt = membership.joinedAt ?? nowIso;
-  membership.notifications = membership.notifications ?? 'quiet';
-  membership.lastVisitedAt = nowIso;
-  if (!membership.role) {
-    membership.role = 'member';
-  }
-  group.pendingMemberIds.delete(userId);
-  group.memberIds.add(userId);
-  group.lastActivityAt = nowIso;
-  group.updatedAt = nowIso;
-
-  return {
-    status: 'member',
-    requiresApproval: false,
-    membership: toMembershipView(membership),
-  };
+  });
 }
 
-export function leaveGroupMembership(groupId: string, userId: string): LeaveGroupResult {
-  ensureSeedData();
-  const db = getDatabase();
-  const group = db.groups.get(groupId);
-  if (!group) {
-    throw new Error('Group not found.');
-  }
-
-  const membership = findMembership(groupId, userId);
+export async function leaveGroupMembership(
+  groupId: string,
+  userId: string
+): Promise<LeaveGroupResult> {
+  const membership = await prisma.groupMembership.findUnique({
+    where: {
+      groupId_userId: {
+        groupId,
+        userId,
+      },
+    },
+  });
   if (!membership) {
     return {
       status: 'guest',
@@ -470,171 +431,179 @@ export function leaveGroupMembership(groupId: string, userId: string): LeaveGrou
     };
   }
 
-  membership.status = 'suspended';
-  membership.lastVisitedAt = new Date().toISOString();
-  membership.notifications = 'quiet';
-
-  group.memberIds.delete(userId);
-  group.pendingMemberIds.delete(userId);
-  group.updatedAt = membership.lastVisitedAt;
+  await prisma.groupMembership.delete({ where: { id: membership.id } });
 
   return {
-    status: 'suspended',
-    membership: toMembershipView(membership),
+    status: 'guest',
+    membership: null,
   };
 }
 
-export function updateNotificationPreference(
-  groupId: string,
-  userId: string,
-  preference: GroupMembershipRecord['notifications']
-): NotificationPreferenceResult {
-  ensureSeedData();
-  const membership = findMembership(groupId, userId);
-  if (!membership) {
-    throw new Error('Membership not found.');
-  }
-  if (membership.status !== 'member') {
-    throw new Error('Only active members can update notifications.');
-  }
-  membership.notifications = preference;
-  membership.lastVisitedAt = new Date().toISOString();
-  return {
-    membership: toMembershipView(membership),
-  };
-}
-
-export function createPrayerRequest(input: {
+export async function createPrayerRequest(input: {
   groupId: string;
   userId: string;
   title: string;
   body?: string;
   reference?: string;
-}): PrayerRequestView {
-  ensureSeedData();
-  const db = getDatabase();
-  const group = db.groups.get(input.groupId);
-  if (!group) {
-    throw new Error('Prayer group not found.');
-  }
+}): Promise<PrayerRequestView> {
+  return prisma.$transaction(async (tx) => {
+    const membership = await tx.groupMembership.findUnique({
+      where: { groupId_userId: { groupId: input.groupId, userId: input.userId } },
+      include: { user: true },
+    });
+    if (!membership || membership.status !== GroupMembershipStatus.MEMBER) {
+      throw new Error('Only members can share requests.');
+    }
 
-  const membership = findMembership(input.groupId, input.userId);
-  if (!membership || membership.status !== 'member') {
-    throw new Error('Only members can share requests.');
-  }
+    const title = input.title.trim();
+    if (title.length < 4) {
+      throw new Error('Please provide a little more detail for this request.');
+    }
+    if (title.length > 220) {
+      throw new Error('Prayer request titles should remain under 220 characters.');
+    }
 
-  const title = input.title.trim();
-  if (title.length === 0) {
-    throw new Error('Please provide a prayer request title.');
-  }
-  if (title.length > 220) {
-    throw new Error('Prayer request titles should remain under 220 characters.');
-  }
+    const request = await tx.prayerRequest.create({
+      data: {
+        groupId: input.groupId,
+        authorId: input.userId,
+        title,
+        body: input.body?.trim() || undefined,
+        reference: input.reference?.trim() || undefined,
+        reactionCounts: { praying: 0 },
+        reactionUserIds: { praying: [] },
+      },
+      include: {
+        author: true,
+      },
+    });
 
-  const nowIso = new Date().toISOString();
-  const record: PrayerRequestRecord = {
-    id: createId('request'),
-    groupId: input.groupId,
-    authorId: input.userId,
-    title,
-    body: input.body?.trim() ? input.body.trim() : undefined,
-    reference: input.reference?.trim() ? input.reference.trim() : undefined,
-    createdAt: nowIso,
-    archivedAt: undefined,
-    answeredAt: undefined,
-    lastActivityAt: nowIso,
-    reactionCounts: { praying: 0 },
-    reactionUserIds: { praying: new Set<string>() },
-  };
+    await tx.group.update({
+      where: { id: input.groupId },
+      data: {
+        lastActivityAt: new Date(),
+      },
+    });
 
-  db.prayerRequests.set(record.id, record);
-  group.requestIds.add(record.id);
-  group.lastActivityAt = nowIso;
-  group.updatedAt = nowIso;
-
-  membership.lastVisitedAt = nowIso;
-
-  return toRequestView(record, input.userId);
+    return toPrayerRequestView(request, input.userId);
+  });
 }
 
-export function togglePrayerRequestPraying(input: {
+export async function togglePrayerRequestPraying(input: {
   groupId: string;
   requestId: string;
   userId: string;
-}): TogglePrayerReactionResult {
-  ensureSeedData();
-  const db = getDatabase();
-  const group = db.groups.get(input.groupId);
-  if (!group) {
-    throw new Error('Prayer group not found.');
-  }
+}): Promise<TogglePrayerReactionResult> {
+  return prisma.$transaction(async (tx) => {
+    const membership = await tx.groupMembership.findUnique({
+      where: { groupId_userId: { groupId: input.groupId, userId: input.userId } },
+    });
+    if (!membership || membership.status !== GroupMembershipStatus.MEMBER) {
+      throw new Error('Only members can respond to prayer requests.');
+    }
 
-  const request = db.prayerRequests.get(input.requestId);
-  if (!request || request.groupId !== input.groupId) {
-    throw new Error('Prayer request not found.');
-  }
+    const request = await tx.prayerRequest.findUnique({
+      where: { id: input.requestId },
+    });
+    if (!request || request.groupId !== input.groupId) {
+      throw new Error('Prayer request not found.');
+    }
 
-  const membership = findMembership(input.groupId, input.userId);
-  if (!membership || membership.status !== 'member') {
-    throw new Error('Only members can respond to prayer requests.');
-  }
+    const counts = parseCounts(request.reactionCounts, { praying: 0 });
+    const userIds = parseUserIds(request.reactionUserIds, { praying: [] });
+    const prayingSet = new Set(userIds.praying ?? []);
 
-  const reactionSet = request.reactionUserIds.praying;
-  const nowIso = new Date().toISOString();
-  if (reactionSet.has(input.userId)) {
-    reactionSet.delete(input.userId);
-    request.reactionCounts.praying = Math.max(0, request.reactionCounts.praying - 1);
-  } else {
-    reactionSet.add(input.userId);
-    request.reactionCounts.praying += 1;
-  }
+    if (prayingSet.has(input.userId)) {
+      prayingSet.delete(input.userId);
+    } else {
+      prayingSet.add(input.userId);
+    }
 
-  request.lastActivityAt = nowIso;
-  membership.lastVisitedAt = nowIso;
-  group.lastActivityAt = nowIso;
-  group.updatedAt = nowIso;
+    counts.praying = prayingSet.size;
+
+    await tx.prayerRequest.update({
+      where: { id: request.id },
+      data: {
+        reactionCounts: counts,
+        reactionUserIds: { praying: Array.from(prayingSet) },
+        lastActivityAt: new Date(),
+      },
+    });
+
+    return {
+      prayingCount: counts.praying,
+      viewerHasPrayed: prayingSet.has(input.userId),
+    };
+  });
+}
+
+export async function archivePrayerRequest(input: {
+  groupId: string;
+  requestId: string;
+  userId: string;
+}): Promise<PrayerRequestView> {
+  return prisma.$transaction(async (tx) => {
+    const membership = await tx.groupMembership.findUnique({
+      where: { groupId_userId: { groupId: input.groupId, userId: input.userId } },
+      include: { user: true },
+    });
+    if (!membership || membership.status !== GroupMembershipStatus.MEMBER) {
+      throw new Error('Only members can archive requests.');
+    }
+
+    const request = await tx.prayerRequest.findUnique({
+      where: { id: input.requestId },
+      include: { author: true },
+    });
+
+    if (!request || request.groupId !== input.groupId) {
+      throw new Error('Prayer request not found.');
+    }
+
+    if (request.authorId !== input.userId && membership.role === GroupRole.MEMBER) {
+      throw new Error('Only facilitators or the author can archive this request.');
+    }
+
+    const archivedAt = request.archivedAt ? new Date(request.archivedAt) : new Date();
+
+    const updated = await tx.prayerRequest.update({
+      where: { id: request.id },
+      data: {
+        archivedAt,
+        lastActivityAt: archivedAt,
+      },
+      include: { author: true },
+    });
+
+    await tx.group.update({
+      where: { id: input.groupId },
+      data: {
+        lastActivityAt: archivedAt,
+      },
+    });
+
+    return toPrayerRequestView(updated, input.userId);
+  });
+}
+
+export async function updateNotificationPreference(
+  groupId: string,
+  userId: string,
+  preference: PrismaNotificationPreference
+): Promise<NotificationPreferenceResult> {
+  const membership = await prisma.groupMembership.update({
+    where: {
+      groupId_userId: {
+        groupId,
+        userId,
+      },
+    },
+    data: {
+      notifications: preference,
+    },
+  });
 
   return {
-    prayingCount: request.reactionCounts.praying,
-    viewerHasPrayed: reactionSet.has(input.userId),
+    membership: toMembershipView(membership),
   };
-}
-
-export function archivePrayerRequest(input: {
-  groupId: string;
-  requestId: string;
-  userId: string;
-}): PrayerRequestView {
-  ensureSeedData();
-  const db = getDatabase();
-  const group = db.groups.get(input.groupId);
-  if (!group) {
-    throw new Error('Prayer group not found.');
-  }
-  const request = db.prayerRequests.get(input.requestId);
-  if (!request || request.groupId !== input.groupId) {
-    throw new Error('Prayer request not found.');
-  }
-
-  const membership = findMembership(input.groupId, input.userId);
-  if (!membership || membership.status !== 'member') {
-    throw new Error('Only members can archive requests.');
-  }
-
-  if (request.archivedAt) {
-    return toRequestView(request, input.userId);
-  }
-
-  const nowIso = new Date().toISOString();
-  if (request.authorId !== input.userId && membership.role === 'member') {
-    throw new Error('Only facilitators or the author can archive this request.');
-  }
-
-  request.archivedAt = nowIso;
-  request.lastActivityAt = nowIso;
-  group.lastActivityAt = nowIso;
-  group.updatedAt = nowIso;
-  membership.lastVisitedAt = nowIso;
-
-  return toRequestView(request, input.userId);
 }

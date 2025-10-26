@@ -59,6 +59,7 @@ model User {
   id                     String      @id @default(cuid())
   email                  String?     @unique
   displayName            String?
+  passwordHash           String?
   role                   String      @default("Member")
   location               String?
   avatarUrl              String?
@@ -81,6 +82,7 @@ model User {
 model Post {
   id            String        @id @default(cuid())
   reference     String
+  passageText   String        @db.Text
   translation   String        @default("WEB")
   reflection    String?
   tags          String[]      @default([])
@@ -131,6 +133,7 @@ model Report {
 model ShareDraft {
   id          String   @id @default(cuid())
   reference   String
+  passageText String   @db.Text
   reflection  String?
   createdAt   DateTime @default(now())
   submittedAt DateTime?
@@ -260,4 +263,13 @@ model ModerationAction {
 
   @@index([postId, createdAt])
   @@index([reportId])
+}
+
+model AdminUser {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 }

@@ -2,9 +2,9 @@ import { ensureUserByEmail, getCurrentUser } from '@/lib/server/auth';
 import { getModerationDashboard } from '@/lib/server/moderation';
 import { AdminReportsClient } from './admin-reports-client';
 
-export default function AdminReportsPage() {
-  const moderator = getCurrentUser() ?? ensureUserByEmail('abigail@goel.app');
-  const dashboard = getModerationDashboard();
+export default async function AdminReportsPage() {
+  const moderator = (await getCurrentUser()) ?? (await ensureUserByEmail('abigail@goel.app'));
+  const dashboard = await getModerationDashboard();
 
   return (
     <AdminReportsClient

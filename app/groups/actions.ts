@@ -1,5 +1,6 @@
 'use server';
 
+import { NotificationPreference as PrismaNotificationPreference } from '@prisma/client';
 import { z } from 'zod';
 import { ensureUserByEmail, getCurrentUser } from '@/lib/server/auth';
 import {
@@ -34,34 +35,34 @@ const notificationsSchema = z.object({
   preference: z.enum(['all', 'quiet', 'mentions']),
 });
 
-function resolveViewer() {
-  const viewer = getCurrentUser();
+async function resolveViewer() {
+  const viewer = await getCurrentUser();
   if (viewer) {
     return viewer;
   }
-  return ensureUserByEmail('guest@goel.app');
+  return await ensureUserByEmail('guest@goel.app');
 }
 
 export async function fetchGroupDetailAction(groupId: string) {
-  const viewer = resolveViewer();
+  const viewer = await resolveViewer();
   const parsed = groupIdSchema.parse(groupId);
-  const detail = getPrayerGroupDetail(parsed, viewer.id);
+  const detail = await getPrayerGroupDetail(parsed, viewer.id);
   return {
     detail,
   };
 }
 
 export async function fetchDirectoryAction() {
-  const viewer = resolveViewer();
-  const directory = getPrayerGroupDirectory(viewer.id);
+  const viewer = await resolveViewer();
+  const directory = await getPrayerGroupDirectory(viewer.id);
   return { directory };
 }
 
 export async function joinGroupAction(input: { groupId: string }) {
-  const viewer = resolveViewer();
+  const viewer = await resolveViewer();
   const parsed = groupIdSchema.parse(input.groupId);
-  const result = requestGroupMembership(parsed, viewer.id);
-  const detail = getPrayerGroupDetail(parsed, viewer.id);
+  const result = await requestGroupMembership(parsed, viewer.id);
+  const detail = await getPrayerGroupDetail(parsed, viewer.id);
   const summary = detail.summary;
 
   return {
@@ -75,10 +76,10 @@ export async function joinGroupAction(input: { groupId: string }) {
 }
 
 export async function leaveGroupAction(input: { groupId: string }) {
-  const viewer = resolveViewer();
+  const viewer = await resolveViewer();
   const parsed = groupIdSchema.parse(input.groupId);
-  const result = leaveGroupMembership(parsed, viewer.id);
-  const detail = getPrayerGroupDetail(parsed, viewer.id);
+  const result = await leaveGroupMembership(parsed, viewer.id);
+  const detail = await getPrayerGroupDetail(parsed, viewer.id);
   return {
     status: result.status,
     membership: result.membership,
@@ -88,9 +89,9 @@ export async function leaveGroupAction(input: { groupId: string }) {
 }
 
 export async function createPrayerRequestAction(input: z.infer<typeof createRequestSchema>) {
-  const viewer = resolveViewer();
+  const viewer = await resolveViewer();
   const parsed = createRequestSchema.parse(input);
-  createPrayerRequest({
+  await createPrayerRequest({
     groupId: parsed.groupId,
     userId: viewer.id,
     title: parsed.title,
@@ -98,7 +99,7 @@ export async function createPrayerRequestAction(input: z.infer<typeof createRequ
     reference: parsed.reference,
   });
 
-  const detail = getPrayerGroupDetail(parsed.groupId, viewer.id);
+  const detail = await getPrayerGroupDetail(parsed.groupId, viewer.id);
   return {
     detail,
     summary: detail.summary,
@@ -106,9 +107,9 @@ export async function createPrayerRequestAction(input: z.infer<typeof createRequ
 }
 
 export async function togglePrayerReactionAction(input: z.infer<typeof togglePrayerSchema>) {
-  const viewer = resolveViewer();
+  const viewer = await resolveViewer();
   const parsed = togglePrayerSchema.parse(input);
-  const result = togglePrayerRequestPraying({
+  const result = await togglePrayerRequestPraying({
     groupId: parsed.groupId,
     requestId: parsed.requestId,
     userId: viewer.id,
@@ -118,15 +119,15 @@ export async function togglePrayerReactionAction(input: z.infer<typeof togglePra
 }
 
 export async function archivePrayerRequestAction(input: z.infer<typeof archiveSchema>) {
-  const viewer = resolveViewer();
+  const viewer = await resolveViewer();
   const parsed = archiveSchema.parse(input);
-  archivePrayerRequest({
+  await archivePrayerRequest({
     groupId: parsed.groupId,
     requestId: parsed.requestId,
     userId: viewer.id,
   });
 
-  const detail = getPrayerGroupDetail(parsed.groupId, viewer.id);
+  const detail = await getPrayerGroupDetail(parsed.groupId, viewer.id);
   return {
     detail,
     summary: detail.summary,
@@ -134,10 +135,12 @@ export async function archivePrayerRequestAction(input: z.infer<typeof archiveSc
 }
 
 export async function setNotificationPreferenceAction(input: z.infer<typeof notificationsSchema>) {
-  const viewer = resolveViewer();
+  const viewer = await resolveViewer();
   const parsed = notificationsSchema.parse(input);
-  const result = updateNotificationPreference(parsed.groupId, viewer.id, parsed.preference);
-  const detail = getPrayerGroupDetail(parsed.groupId, viewer.id);
+  const preferenceKey = parsed.preference.toUpperCase() as keyof typeof PrismaNotificationPreference;
+  const preference = PrismaNotificationPreference[preferenceKey];
+  const result = await updateNotificationPreference(parsed.groupId, viewer.id, preference);
+  const detail = await getPrayerGroupDetail(parsed.groupId, viewer.id);
   return {
     membership: result.membership,
     detail,

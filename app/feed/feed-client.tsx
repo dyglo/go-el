@@ -9,8 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
 import type { Passage } from '@/lib/scripture';
-import type { FeedPost } from '@/lib/server/posts';
-import type { ReactionType } from '@/lib/server/db';
+import type { FeedPost, ReactionType } from '@/lib/server/posts';
 import { toggleReactionAction, reportPostAction } from './actions';
 import { PrimaryHeader } from '@/components/layout/primary-header';
 
@@ -44,7 +43,13 @@ const prayerHighlights = [
 const filterCategories = ['All', 'Gospels', 'Psalms', 'Epistles', 'Prophets'] as const;
 type FilterCategory = (typeof filterCategories)[number];
 
-function getCategoryForBook(book: string): FilterCategory {
+function deriveBook(reference: string): string {
+  const beforeColon = reference.split(':')[0] ?? reference;
+  return beforeColon.replace(/\s*\d+$/u, '').trim();
+}
+
+function getCategoryForReference(reference: string): FilterCategory {
+  const book = deriveBook(reference);
   if (['Matthew', 'Mark', 'Luke', 'John'].includes(book)) {
     return 'Gospels';
   }
@@ -74,7 +79,7 @@ function formatTimestamp(iso: string) {
 }
 
 export function FeedClient({ initialPosts, dailyFocus, viewer }: FeedClientProps) {
-  const viewerId = viewer?.id ?? undefined;
+  const viewerId = viewer?.id ?? null;
   const [posts, setPosts] = useState(initialPosts);
   const [activeFilter, setActiveFilter] = useState<FilterCategory>('All');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -85,7 +90,7 @@ export function FeedClient({ initialPosts, dailyFocus, viewer }: FeedClientProps
     if (activeFilter === 'All') {
       return posts;
     }
-    return posts.filter((post) => getCategoryForBook(post.passage.reference.book) === activeFilter);
+    return posts.filter((post) => getCategoryForReference(post.reference) === activeFilter);
   }, [activeFilter, posts]);
 
   const handleToggleExpand = (postId: string) => {
@@ -127,6 +132,10 @@ export function FeedClient({ initialPosts, dailyFocus, viewer }: FeedClientProps
   };
 
   const handleToggleReaction = (postId: string, reaction: ReactionType) => {
+    if (!viewerId) {
+      toast.info('Sign in to respond to Scriptures.');
+      return;
+    }
     optimisticUpdate(postId, reaction);
     startToggle(async () => {
       try {
@@ -268,9 +277,9 @@ export function FeedClient({ initialPosts, dailyFocus, viewer }: FeedClientProps
         <section className="grid gap-6 md:grid-cols-[2fr,1fr]">
           <div className="space-y-6">
             {filteredPosts.map((post) => {
-              const bookCategory = getCategoryForBook(post.passage.reference.book);
-              const passageText = post.passage.verses.map((verse) => verse.text).join(' ');
-              const shouldClamp = passageText.length > 360 && !expanded.has(post.id);
+               const bookCategory = getCategoryForReference(post.reference);
+               const passageText = post.passageText;
+               const shouldClamp = passageText.length > 360 && !expanded.has(post.id);
 
               return (
                 <motion.article
@@ -284,13 +293,7 @@ export function FeedClient({ initialPosts, dailyFocus, viewer }: FeedClientProps
                   <div className="flex flex-wrap items-center justify-between gap-4">
                     <div>
                       <p className="text-xs uppercase tracking-[0.35em] text-white/40">{bookCategory}</p>
-                      <h3 className="mt-1 text-2xl font-semibold text-golden">
-                        {post.passage.reference.book} {post.passage.reference.chapter}:
-                        {post.passage.reference.startVerse}
-                        {post.passage.reference.endVerse && post.passage.reference.endVerse !== post.passage.reference.startVerse
-                          ? `-${post.passage.reference.endVerse}`
-                          : ''}
-                      </h3>
+                      <h3 className="mt-1 text-2xl font-semibold text-golden">{post.reference}</h3>
                     </div>
                     <div className="flex items-center gap-3">
                       <Badge variant="outline" className="border-white/10 text-white/60">

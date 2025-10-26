@@ -1,5 +1,14 @@
-﻿import { randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
+import { AuthProvider as PrismaAuthProvider } from '@prisma/client';
+import type {
+  MagicLink as PrismaMagicLink,
+  OAuthState as PrismaOAuthState,
+  Session as PrismaSession,
+  User as PrismaUser,
+} from '@prisma/client';
+import bcrypt from 'bcryptjs';
 import { cookies } from 'next/headers';
+import { prisma } from './prisma';
 import {
   getDatabase,
   type MagicLinkRecord,
@@ -12,6 +21,7 @@ import { ensureSeedData } from './seed';
 const SESSION_COOKIE = 'goel_session';
 const MAGIC_LINK_TTL_MINUTES = 30;
 const SESSION_TTL_HOURS = 24;
+const BCRYPT_ROUNDS = 10;
 
 function now() {
   return new Date();
@@ -29,128 +39,243 @@ function normaliseEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
-export function ensureUserByEmail(email: string): UserRecord {
-  ensureSeedData();
-  const db = getDatabase();
-  const normalised = normaliseEmail(email);
-  const existing = Array.from(db.users.values()).find((user) => user.email?.toLowerCase() === normalised);
-
-  if (existing) {
-    return existing;
+function fallbackNameFromEmail(email?: string | null) {
+  if (!email) {
+    return 'Friend';
   }
-
-  const id = `user_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
-  const user: UserRecord = {
-    id,
-    name: normalised.split('@')[0],
-    email: normalised,
-    role: 'Member',
-    createdAt: now().toISOString(),
-  };
-  db.users.set(id, user);
-  return user;
+  const [localPart] = email.split('@');
+  return localPart?.length ? localPart : 'Friend';
 }
 
-export function createMagicLink(user: UserRecord): MagicLinkRecord {
-  const db = getDatabase();
-  const issuedAt = now();
-  const token = randomUUID().replace(/-/g, '');
-  const record: MagicLinkRecord = {
-    id: `magic_${token.slice(0, 10)}`,
-    userId: user.id,
-    email: user.email ?? '',
-    token,
-    createdAt: issuedAt.toISOString(),
-    expiresAt: addMinutes(issuedAt, MAGIC_LINK_TTL_MINUTES).toISOString(),
+function toUserRecord(user: PrismaUser): UserRecord {
+  return {
+    id: user.id,
+    name: user.displayName ?? fallbackNameFromEmail(user.email),
+    email: user.email ?? undefined,
+    role: user.role,
+    location: user.location ?? undefined,
+    avatarUrl: user.avatarUrl ?? undefined,
+    createdAt: user.createdAt.toISOString(),
   };
-  db.magicLinks.set(record.token, record);
+}
+
+function syncUserToMemory(user: PrismaUser): UserRecord {
+  const record = toUserRecord(user);
+  const db = getDatabase();
+  db.users.set(record.id, record);
   return record;
 }
 
-export function consumeMagicLink(token: string): UserRecord | null {
+function findSeedUserByEmail(email: string): UserRecord | null {
   const db = getDatabase();
-  const record = db.magicLinks.get(token);
+  for (const user of Array.from(db.users.values())) {
+    if (user.email && user.email.toLowerCase() === email) {
+      return user;
+    }
+  }
+  return null;
+}
+
+async function loadUser(userId: string): Promise<UserRecord | null> {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) {
+    return null;
+  }
+  return syncUserToMemory(user);
+}
+
+function toMagicLinkRecord(record: PrismaMagicLink): MagicLinkRecord {
+  return {
+    id: record.id,
+    userId: record.userId,
+    email: record.email,
+    token: record.token,
+    createdAt: record.createdAt.toISOString(),
+    expiresAt: record.expiresAt.toISOString(),
+    consumedAt: record.consumedAt?.toISOString(),
+  };
+}
+
+function toSessionRecord(session: PrismaSession): SessionRecord {
+  return {
+    id: session.id,
+    userId: session.userId,
+    createdAt: session.createdAt.toISOString(),
+    expiresAt: session.expiresAt.toISOString(),
+  };
+}
+
+const prismaProviderToLiteral: Record<PrismaAuthProvider, 'google' | 'apple'> = {
+  [PrismaAuthProvider.GOOGLE]: 'google',
+  [PrismaAuthProvider.APPLE]: 'apple',
+};
+
+const literalProviderToPrisma: Record<'google' | 'apple', PrismaAuthProvider> = {
+  google: PrismaAuthProvider.GOOGLE,
+  apple: PrismaAuthProvider.APPLE,
+};
+
+function toOAuthStateRecord(state: PrismaOAuthState): OAuthStateRecord {
+  return {
+    id: state.id,
+    provider: prismaProviderToLiteral[state.provider],
+    redirectTo: state.redirectTo ?? undefined,
+    createdAt: state.createdAt.toISOString(),
+    expiresAt: state.expiresAt.toISOString(),
+  };
+}
+
+export async function ensureUserByEmail(email: string): Promise<UserRecord> {
+  ensureSeedData();
+  const normalised = normaliseEmail(email);
+
+  const existing = await prisma.user.findUnique({ where: { email: normalised } });
+  if (existing) {
+    return syncUserToMemory(existing);
+  }
+
+  const seed = findSeedUserByEmail(normalised);
+  if (seed) {
+    const createdFromSeed = await prisma.user.create({
+      data: {
+        id: seed.id,
+        email: normalised,
+        displayName: seed.name,
+        role: seed.role,
+        location: seed.location,
+        avatarUrl: seed.avatarUrl,
+        createdAt: new Date(seed.createdAt),
+      },
+    });
+    return syncUserToMemory(createdFromSeed);
+  }
+
+  const created = await prisma.user.create({
+    data: {
+      email: normalised,
+      displayName: fallbackNameFromEmail(normalised),
+      role: 'Member',
+    },
+  });
+
+  return syncUserToMemory(created);
+}
+
+export async function createMagicLink(user: UserRecord): Promise<MagicLinkRecord> {
+  ensureSeedData();
+  if (!user.email) {
+    throw new Error('Magic links require an email address.');
+  }
+
+  await ensureUserByEmail(user.email);
+
+  const issuedAt = now();
+  const token = randomUUID().replace(/-/g, '');
+  const expiresAt = addMinutes(issuedAt, MAGIC_LINK_TTL_MINUTES);
+
+  const record = await prisma.magicLink.create({
+    data: {
+      token,
+      email: user.email,
+      userId: user.id,
+      createdAt: issuedAt,
+      expiresAt,
+    },
+  });
+
+  return toMagicLinkRecord(record);
+}
+
+export async function consumeMagicLink(token: string): Promise<UserRecord | null> {
+  ensureSeedData();
+  const record = await prisma.magicLink.findUnique({ where: { token } });
   if (!record) {
     return null;
   }
 
   if (record.consumedAt) {
-    return db.users.get(record.userId) ?? null;
+    return loadUser(record.userId);
   }
 
-  const expiresAt = new Date(record.expiresAt);
-  if (expiresAt.getTime() < now().getTime()) {
-    db.magicLinks.delete(token);
+  if (record.expiresAt.getTime() < now().getTime()) {
+    await prisma.magicLink.delete({ where: { token } });
     return null;
   }
 
-  record.consumedAt = now().toISOString();
-  db.magicLinks.set(token, record);
-  return db.users.get(record.userId) ?? null;
+  await prisma.magicLink.update({
+    where: { token },
+    data: { consumedAt: now() },
+  });
+
+  return loadUser(record.userId);
 }
 
-export function createSession(userId: string): SessionRecord {
-  const db = getDatabase();
+export async function createSession(userId: string): Promise<SessionRecord> {
   const issuedAt = now();
-  const session: SessionRecord = {
-    id: `session_${randomUUID().replace(/-/g, '').slice(0, 18)}`,
-    userId,
-    createdAt: issuedAt.toISOString(),
-    expiresAt: addHours(issuedAt, SESSION_TTL_HOURS).toISOString(),
-  };
-  db.sessions.set(session.id, session);
-  return session;
+  const expiresAt = addHours(issuedAt, SESSION_TTL_HOURS);
+  const session = await prisma.session.create({
+    data: {
+      userId,
+      createdAt: issuedAt,
+      expiresAt,
+    },
+  });
+  return toSessionRecord(session);
 }
 
-export function revokeSession(sessionId: string) {
-  const db = getDatabase();
-  db.sessions.delete(sessionId);
+export async function revokeSession(sessionId: string): Promise<void> {
+  try {
+    await prisma.session.delete({ where: { id: sessionId } });
+  } catch (error) {
+    // Ignore missing sessions.
+    if (process.env.NODE_ENV === 'development') {
+      console.warn('Attempted to revoke missing session', sessionId, error);
+    }
+  }
 }
 
-export function getSession(sessionId: string): SessionRecord | null {
-  const db = getDatabase();
-  const session = db.sessions.get(sessionId);
+export async function getSession(sessionId: string): Promise<SessionRecord | null> {
+  const session = await prisma.session.findUnique({ where: { id: sessionId } });
   if (!session) {
     return null;
   }
 
-  if (new Date(session.expiresAt).getTime() < now().getTime()) {
-    db.sessions.delete(sessionId);
+  if (session.expiresAt.getTime() < now().getTime()) {
+    await prisma.session.delete({ where: { id: sessionId } }).catch(() => {});
     return null;
   }
 
-  return session;
+  return toSessionRecord(session);
 }
 
-export function beginOAuth(provider: 'google' | 'apple', redirectTo?: string): OAuthStateRecord {
-  const db = getDatabase();
+export async function beginOAuth(provider: 'google' | 'apple', redirectTo?: string): Promise<OAuthStateRecord> {
   const issuedAt = now();
-  const state: OAuthStateRecord = {
-    id: `oauth_${randomUUID().replace(/-/g, '').slice(0, 18)}`,
-    provider,
-    redirectTo,
-    createdAt: issuedAt.toISOString(),
-    expiresAt: addMinutes(issuedAt, 10).toISOString(),
-  };
-  db.oauthStates.set(state.id, state);
-  return state;
+  const state = await prisma.oAuthState.create({
+    data: {
+      provider: literalProviderToPrisma[provider],
+      redirectTo,
+      createdAt: issuedAt,
+      expiresAt: addMinutes(issuedAt, 10),
+    },
+  });
+  return toOAuthStateRecord(state);
 }
 
-export function completeOAuth(stateId: string): UserRecord | null {
-  const db = getDatabase();
-  const state = db.oauthStates.get(stateId);
+export async function completeOAuth(stateId: string): Promise<UserRecord | null> {
+  const state = await prisma.oAuthState.findUnique({ where: { id: stateId } });
   if (!state) {
     return null;
   }
 
-  if (new Date(state.expiresAt).getTime() < now().getTime()) {
-    db.oauthStates.delete(stateId);
+  if (state.expiresAt.getTime() < now().getTime()) {
+    await prisma.oAuthState.delete({ where: { id: stateId } });
     return null;
   }
 
-  const demoEmail = `${state.provider}@demo.goel.app`;
-  const user = ensureUserByEmail(demoEmail);
-  db.oauthStates.delete(stateId);
+  const provider = prismaProviderToLiteral[state.provider];
+  const demoEmail = `${provider}@demo.goel.app`;
+  const user = await ensureUserByEmail(demoEmail);
+  await prisma.oAuthState.delete({ where: { id: stateId } });
   return user;
 }
 
@@ -174,26 +299,102 @@ export function getSessionIdFromCookies(): string | null {
   return cookieStore.get(SESSION_COOKIE)?.value ?? null;
 }
 
-export function getCurrentUser(): UserRecord | null {
+export async function getCurrentUser(): Promise<UserRecord | null> {
   ensureSeedData();
-  const cookieStore = cookies();
-  const sessionId = cookieStore.get(SESSION_COOKIE)?.value;
+  const sessionId = getSessionIdFromCookies();
   if (!sessionId) {
     return null;
   }
 
-  const session = getSession(sessionId);
+  const session = await getSession(sessionId);
   if (!session) {
-    cookieStore.delete(SESSION_COOKIE);
+    clearSessionCookie();
     return null;
   }
 
-  const db = getDatabase();
-  const user = db.users.get(session.userId) ?? null;
+  const user = await loadUser(session.userId);
   if (!user) {
-    cookieStore.delete(SESSION_COOKIE);
+    await revokeSession(session.id);
+    clearSessionCookie();
     return null;
   }
 
   return user;
+}
+
+export async function registerUserWithPassword(input: {
+  name: string;
+  email: string;
+  password: string;
+}): Promise<UserRecord> {
+  ensureSeedData();
+  const name = input.name.trim();
+  const email = normaliseEmail(input.email);
+  const password = input.password;
+
+  if (!name) {
+    throw new Error('Name is required.');
+  }
+  if (!password || password.length < 8) {
+    throw new Error('Password must be at least 8 characters long.');
+  }
+
+  const existing = await prisma.user.findUnique({ where: { email } });
+  const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+
+  if (existing) {
+    if (existing.passwordHash) {
+      throw new Error('An account already exists for this email.');
+    }
+    const updated = await prisma.user.update({
+      where: { id: existing.id },
+      data: {
+        displayName: name,
+        passwordHash,
+        email,
+      },
+    });
+    return syncUserToMemory(updated);
+  }
+
+  const created = await prisma.user.create({
+    data: {
+      email,
+      displayName: name,
+      passwordHash,
+      role: 'Member',
+    },
+  });
+
+  return syncUserToMemory(created);
+}
+
+export async function verifyUserCredentials(input: {
+  email: string;
+  password: string;
+}): Promise<UserRecord | null> {
+  ensureSeedData();
+  const email = normaliseEmail(input.email);
+  const user = await prisma.user.findUnique({ where: { email } });
+  if (!user || !user.passwordHash) {
+    return null;
+  }
+
+  const isValid = await bcrypt.compare(input.password, user.passwordHash);
+  if (!isValid) {
+    return null;
+  }
+
+  return syncUserToMemory(user);
+}
+
+export async function updateUserPassword(userId: string, password: string): Promise<void> {
+  if (!password || password.length < 8) {
+    throw new Error('Password must be at least 8 characters long.');
+  }
+  const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+  await prisma.user.update({
+    where: { id: userId },
+    data: { passwordHash },
+  });
 }
