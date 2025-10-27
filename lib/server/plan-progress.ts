@@ -75,7 +75,7 @@ export async function setPlanDayCompletion({ userId, planId, day, complete }: To
   }
 
   if (!complete) {
-    await prisma.planProgress
+    await (prisma as any).planProgress
       .delete({
         where: {
           userId_planId_day: {
@@ -90,7 +90,7 @@ export async function setPlanDayCompletion({ userId, planId, day, complete }: To
   }
 
   const now = new Date();
-  await prisma.planProgress.upsert({
+  await (prisma as any).planProgress.upsert({
     where: {
       userId_planId_day: {
         userId,
@@ -112,11 +112,19 @@ export async function setPlanDayCompletion({ userId, planId, day, complete }: To
   return { isCompleted: true as const, completedAt: now.toISOString() };
 }
 
-export async function getPlanProgressEntries(userId: string, planId: string) {
-  return prisma.planProgress.findMany({
+export type PlanProgressEntry = {
+  id: string;
+  userId: string;
+  planId: string;
+  day: number;
+  completedAt: Date;
+};
+
+export async function getPlanProgressEntries(userId: string, planId: string): Promise<PlanProgressEntry[]> {
+  return (prisma as any).planProgress.findMany({
     where: { userId, planId },
     orderBy: [{ day: 'asc' }],
-  });
+  }) as Promise<PlanProgressEntry[]>;
 }
 
 export type PlanProgressSummary = {
