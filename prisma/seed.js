@@ -25,6 +25,7 @@ const users = [
     email: 'miriam@example.com',
     role: 'House Church Coordinator',
     location: 'Jerusalem, IL',
+    profileSlug: 'miriam-l',
     createdAt: daysAgo(36),
   },
   {
@@ -33,6 +34,7 @@ const users = [
     email: 'samuel@example.com',
     role: 'Mission Pastor',
     location: 'Nairobi, KE',
+    profileSlug: 'samuel-k',
     createdAt: daysAgo(26),
   },
   {
@@ -41,6 +43,7 @@ const users = [
     email: 'grace@example.com',
     role: 'Discipleship Guide',
     location: 'Austin, US',
+    profileSlug: 'grace-p',
     createdAt: daysAgo(18),
   },
   {
@@ -49,6 +52,7 @@ const users = [
     email: 'noah@example.com',
     role: 'Prayer Room Host',
     location: 'Toronto, CA',
+    profileSlug: 'noah-a',
     createdAt: daysAgo(7),
   },
   {
@@ -57,6 +61,7 @@ const users = [
     email: 'hannah@example.com',
     role: 'Prayer Scribe',
     location: 'London, UK',
+    profileSlug: 'hannah-r',
     createdAt: daysAgo(5),
   },
   {
@@ -66,6 +71,7 @@ const users = [
     role: 'Admin',
     location: 'Chicago, US',
     passwordHash: ADMIN_PASSWORD_HASH,
+    profileSlug: 'abigail-k',
     createdAt: daysAgo(40),
   },
   {
@@ -73,6 +79,7 @@ const users = [
     displayName: 'Guest User',
     email: 'guest@goel.app',
     role: 'Member',
+    profileSlug: 'guest',
     createdAt: daysAgo(1),
   },
 ];
@@ -123,6 +130,65 @@ const posts = [
     tags: ['Peace', 'Trust'],
     createdAt: hoursAgo(48),
     status: PostStatus.PUBLISHED,
+  },
+];
+
+const reflections = [
+  {
+    id: 'reflection_miriam_john15',
+    userId: 'user_miriam',
+    postId: 'post_john_15_4_5',
+    createdAt: daysAgo(2),
+  },
+  {
+    id: 'reflection_grace_psalm23',
+    userId: 'user_grace',
+    postId: 'post_psalm_23_1_3',
+    createdAt: daysAgo(3),
+  },
+  {
+    id: 'reflection_noah_hebrews10',
+    userId: 'user_noah',
+    postId: 'post_hebrews_10_24_25',
+    createdAt: daysAgo(4),
+  },
+];
+
+const planProgressEntries = [
+  {
+    id: 'progress_miriam_day_1',
+    userId: 'user_miriam',
+    planId: 'gospel-journey-30',
+    day: 1,
+    completedAt: daysAgo(10),
+  },
+  {
+    id: 'progress_miriam_day_2',
+    userId: 'user_miriam',
+    planId: 'gospel-journey-30',
+    day: 2,
+    completedAt: daysAgo(9),
+  },
+  {
+    id: 'progress_grace_day_1',
+    userId: 'user_grace',
+    planId: 'gospel-journey-30',
+    day: 1,
+    completedAt: daysAgo(5),
+  },
+  {
+    id: 'progress_grace_day_2',
+    userId: 'user_grace',
+    planId: 'gospel-journey-30',
+    day: 2,
+    completedAt: daysAgo(3),
+  },
+  {
+    id: 'progress_grace_day_3',
+    userId: 'user_grace',
+    planId: 'gospel-journey-30',
+    day: 3,
+    completedAt: daysAgo(1),
   },
 ];
 
@@ -279,6 +345,7 @@ async function seedUsers() {
         role: data.role,
         location: data.location ?? null,
         passwordHash: data.passwordHash ?? undefined,
+        profileSlug: data.profileSlug ?? undefined,
       },
       create: {
         id,
@@ -352,6 +419,20 @@ async function seedPosts() {
   }
 }
 
+async function seedReflections() {
+  for (const reflection of reflections) {
+    await prisma.reflection.upsert({
+      where: { id: reflection.id },
+      update: {
+        userId: reflection.userId,
+        postId: reflection.postId,
+        createdAt: reflection.createdAt,
+      },
+      create: reflection,
+    });
+  }
+}
+
 async function seedReactions() {
   for (const reaction of reactions) {
     await prisma.reaction.upsert({
@@ -390,6 +471,21 @@ async function seedReports() {
         notes: action.notes ?? null,
       },
       create: action,
+    });
+  }
+}
+
+async function seedPlanProgress() {
+  for (const entry of planProgressEntries) {
+    await prisma.planProgress.upsert({
+      where: { id: entry.id },
+      update: {
+        userId: entry.userId,
+        planId: entry.planId,
+        day: entry.day,
+        completedAt: entry.completedAt,
+      },
+      create: entry,
     });
   }
 }
@@ -511,8 +607,10 @@ async function main() {
   await seedUsers();
   await seedAdminUser();
   await seedPosts();
+  await seedReflections();
   await seedReactions();
   await seedReports();
+  await seedPlanProgress();
   await seedGroups();
 }
 

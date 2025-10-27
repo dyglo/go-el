@@ -11,7 +11,7 @@ test('getFeedPosts returns scripture-rich posts for the viewer', async () => {
   assert.ok(posts.length > 0, 'expected seeded posts to be returned');
 
   const [first] = posts;
-  assert.ok(first.passage.verses.length > 0, 'passage should resolve verses');
+  assert.ok(first.passageText.length > 0, 'passage text should be populated');
   assert.ok(first.reactions.counts.amen >= 0, 'amen reaction count should be present');
 });
 
@@ -34,18 +34,14 @@ test('createShare persists a new post that immediately appears in the feed', asy
   resetSeedData();
   const payload: SharePayload = {
     userId: 'user_miriam',
-    reference: {
-      book: 'John',
-      chapter: 1,
-      startVerse: 1,
-      endVerse: 5,
-    },
-    reflection: 'Integration test share sample.',
+    reference: 'John 1:1-5',
+    passageText: 'In the beginning was the Word, and the Word was with God, and the Word was God.',
+    testimony: 'Integration test share sample.',
   };
 
   const newPost = await createShare(payload);
-  assert.equal(newPost.passage.reference.book, 'John');
-  assert.equal(newPost.passage.reference.startVerse, 1);
+  assert.equal(newPost.reference, 'John 1:1-5');
+  assert.ok(newPost.passageText.includes('Word was with God'));
 
   const posts = await getFeedPosts(payload.userId);
   assert.ok(posts.some((post) => post.id === newPost.id), 'newly shared post should be part of feed');

@@ -9,6 +9,7 @@ export type UserRecord = {
   role: string;
   location?: string;
   avatarUrl?: string;
+  profileSlug?: string;
   createdAt: string;
 };
 
@@ -70,6 +71,21 @@ export type ShareDraftRecord = {
   reflection?: string;
   createdAt: string;
   submittedAt?: string;
+};
+
+export type ReflectionRecord = {
+  id: string;
+  userId: string;
+  postId: string;
+  createdAt: string;
+};
+
+export type PlanProgressRecord = {
+  id: string;
+  userId: string;
+  planId: string;
+  day: number;
+  completedAt: string;
 };
 
 export type GroupRecord = {
@@ -134,6 +150,8 @@ type DatabaseShape = {
   posts: Map<string, PostRecord>;
   reports: Map<string, ReportRecord>;
   shares: Map<string, ShareDraftRecord>;
+  reflections: Map<string, ReflectionRecord>;
+  planProgress: Map<string, PlanProgressRecord>;
   sessions: Map<string, SessionRecord>;
   magicLinks: Map<string, MagicLinkRecord>;
   oauthStates: Map<string, OAuthStateRecord>;
@@ -154,6 +172,8 @@ const database: DatabaseShape = {
   posts: existingDb?.posts ?? new Map(),
   reports: existingDb?.reports ?? new Map(),
   shares: existingDb?.shares ?? new Map(),
+  reflections: existingDb?.reflections ?? new Map(),
+  planProgress: existingDb?.planProgress ?? new Map(),
   sessions: existingDb?.sessions ?? new Map(),
   magicLinks: existingDb?.magicLinks ?? new Map(),
   oauthStates: existingDb?.oauthStates ?? new Map(),

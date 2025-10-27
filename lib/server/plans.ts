@@ -2,6 +2,9 @@ import { GOSPEL_PLAN_DAYS, VERSE_OF_DAY_ROTATION, type GospelPlanDay } from '@/l
 import { getWebPassageByReference, parseReference, referenceToPassageId } from '@/lib/scripture';
 import type { Passage } from '@/lib/scripture';
 
+export const GOSPEL_PLAN_ID = 'gospel-journey-30';
+export const KNOWN_PLAN_IDS = [GOSPEL_PLAN_ID];
+
 export type VerseOfDay = {
   reference: string;
   theme: string;
@@ -102,7 +105,7 @@ export async function getGospelPlan(): Promise<GospelPlanSummary> {
   );
 
   return {
-    id: 'gospel-journey-30',
+    id: GOSPEL_PLAN_ID,
     title: '30-Day Gospel Journey',
     subtitle: 'Walk through the life and teachings of Jesus.',
     days: daysWithAvailability,
@@ -121,4 +124,16 @@ export function getPlanDayByReference(reference: string): GospelPlanDay | undefi
       candidate.endVerse === parsed.endVerse
     );
   });
+}
+
+export function getPlanOverview(planId: string) {
+  if (planId === GOSPEL_PLAN_ID) {
+    return {
+      id: GOSPEL_PLAN_ID,
+      title: '30-Day Gospel Journey',
+      subtitle: 'Walk through the life and teachings of Jesus.',
+      totalDays: GOSPEL_PLAN_DAYS.length,
+    };
+  }
+  return null;
 }

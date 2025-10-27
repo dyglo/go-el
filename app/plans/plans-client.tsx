@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useTransition } from 'react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
 import { Bell, BellOff, BookOpen, Calendar, CheckCircle2, Circle, Flame, Star } from 'lucide-react';
@@ -20,6 +20,8 @@ import type { Passage } from '@/lib/scripture';
 import { usePlanProgress } from '@/hooks/use-plan-progress';
 import { useReminderPreference } from '@/hooks/use-reminder-preference';
 import { PrimaryHeader } from '@/components/layout/primary-header';
+import { toast } from 'sonner';
+import { setPlanProgressAction } from './actions';
 
 type VerseOfDayClient = {
   reference: string;
@@ -51,16 +53,24 @@ type PlanClientPayload = {
 type PlansClientProps = {
   verseOfDay: VerseOfDayClient;
   plan: PlanClientPayload;
+  viewerId?: string | null;
+  initialProgress?: Record<number, string>;
 };
 
-export function PlansClient({ verseOfDay, plan }: PlansClientProps) {
-  const { completedDays, completedCount, completionPercent, streaks, toggleDay } = usePlanProgress(plan.totalDays);
+export function PlansClient({ verseOfDay, plan, viewerId, initialProgress }: PlansClientProps) {
+  const { completedDays, completedCount, completionPercent, streaks, toggleDay, setDayState } = usePlanProgress({
+    totalDays: plan.totalDays,
+    initialCompleted: initialProgress,
+  });
+  const [pendingDayId, setPendingDayId] = useState<number | null>(null);
+  const [isSyncing, startSync] = useTransition();
   const { enabled: remindersEnabled, permission, toggle } = useReminderPreference();
   const [modalData, setModalData] = useState<{
     reference: string;
     translation: string;
     verses: Passage['verses'];
   } | null>(null);
+  const [localWarningShown, setLocalWarningShown] = useState(false);
 
   const verseText = useMemo(() => {
     return verseOfDay.passage.verses.map((verse) => `${verse.text}`).join(' ');
@@ -74,6 +84,37 @@ export function PlansClient({ verseOfDay, plan }: PlansClientProps) {
         : permission === 'unsupported'
           ? 'Reminders are not supported in this browser.'
           : 'Enable reminders to receive a daily prompt to open the Word.';
+
+  const handleToggleDay = (dayNumber: number) => {
+    const result = toggleDay(dayNumber);
+
+    if (!viewerId) {
+      if (!localWarningShown) {
+        toast.info('Progress is stored on this device. Sign in to sync across devices.');
+        setLocalWarningShown(true);
+      }
+      return;
+    }
+
+    setPendingDayId(dayNumber);
+    startSync(async () => {
+      try {
+        const response = await setPlanProgressAction({
+          planId: plan.id,
+          day: dayNumber,
+          complete: result.completed,
+        });
+        setDayState(dayNumber, response.isCompleted, response.completedAt);
+      } catch (error) {
+        if (result.previous) {
+          setDayState(dayNumber, result.previous.completed, result.previous.timestamp);
+        }
+        toast.error('Unable to sync your plan progress. We restored the previous state.');
+      } finally {
+        setPendingDayId((current) => (current === dayNumber ? null : current));
+      }
+    });
+  };
 
   return (
     <div className="min-h-screen bg-black text-white">
@@ -202,13 +243,14 @@ export function PlansClient({ verseOfDay, plan }: PlansClientProps) {
                 <p className="mt-1 text-white/60">{plan.subtitle}</p>
               </div>
               <Badge className="self-start bg-white/10 text-xs uppercase tracking-[0.2em] text-white/70">
-                30 days
+                {plan.totalDays} days
               </Badge>
             </div>
 
             <div className="mt-6 grid gap-3 md:grid-cols-2">
               {plan.days.map((day, index) => {
                 const completed = completedDays.has(day.day);
+                const isPendingDay = pendingDayId === day.day && isSyncing;
                 return (
                   <motion.div
                     key={day.day}
@@ -219,8 +261,8 @@ export function PlansClient({ verseOfDay, plan }: PlansClientProps) {
                     <Card
                       className={`cursor-pointer rounded-2xl border transition-colors ${
                         completed ? 'border-golden/40 bg-golden/10' : 'border-white/10 bg-white/5 hover:bg-white/10'
-                      }`}
-                      onClick={() => toggleDay(day.day)}
+                      } ${isPendingDay ? 'pointer-events-none opacity-70' : ''}`}
+                      onClick={() => handleToggleDay(day.day)}
                     >
                       <div className="flex flex-col gap-4 p-4">
                         <div className="flex items-start gap-3">
@@ -246,7 +288,7 @@ export function PlansClient({ verseOfDay, plan }: PlansClientProps) {
 
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-xs uppercase tracking-[0.2em] text-white/40">
-                            {completed ? 'Completed' : 'Tap to toggle'}
+                            {isPendingDay ? 'Syncing...' : completed ? 'Completed' : 'Tap to toggle'}
                           </span>
                           {day.available && day.passage ? (
                             <Button
@@ -301,7 +343,9 @@ export function PlansClient({ verseOfDay, plan }: PlansClientProps) {
       >
         <DialogContent className="max-h-[80vh] overflow-y-auto border border-white/10 bg-black/95 text-white sm:max-w-2xl">
           <DialogHeader className="space-y-2">
-            <DialogTitle className="text-2xl font-semibold text-golden">{modalData?.reference}</DialogTitle>
+            <DialogTitle className="text-2xl font-semibold text-golden">
+              {modalData?.reference ?? 'Passage preview'}
+            </DialogTitle>
             <DialogDescription className="text-sm uppercase tracking-[0.3em] text-white/40">
               {modalData?.translation}
             </DialogDescription>

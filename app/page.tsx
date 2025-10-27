@@ -23,6 +23,7 @@ import {
   X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import ThemeToggle from '@/components/ui/theme-toggle';
 import { Input } from '@/components/ui/input';
 
 type NavItem = {
@@ -963,6 +964,10 @@ export default function Home() {
             </div>
           </div>
         </div>
+        <div className="mt-8 flex justify-center">
+          <ThemeToggle />
+        </div>
+
         <div className="mt-12 border-t border-white/10 pt-6 text-center text-xs text-white/50">
           &copy; {new Date().getFullYear()} GO&apos;EL. Built unto the glory of God.
         </div>

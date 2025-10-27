@@ -3,14 +3,25 @@
 import { useMemo, useState, useTransition } from 'react';
 import Link from 'next/link';
 import { AnimatePresence, motion } from 'framer-motion';
-import { ArrowUpRight, BadgeCheck, ChevronDown, Flag, Heart, MessageCircle, Plus, Share2 } from 'lucide-react';
+import {
+  ArrowUpRight,
+  BadgeCheck,
+  BookmarkCheck,
+  BookmarkPlus,
+  ChevronDown,
+  Flag,
+  Heart,
+  MessageCircle,
+  Plus,
+  Share2,
+} from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
 import type { Passage } from '@/lib/scripture';
 import type { FeedPost, ReactionType } from '@/lib/server/posts';
-import { toggleReactionAction, reportPostAction } from './actions';
+import { toggleReactionAction, reportPostAction, toggleReflectionAction } from './actions';
 import { PrimaryHeader } from '@/components/layout/primary-header';
 
 type ViewerInfo = {
@@ -85,6 +96,8 @@ export function FeedClient({ initialPosts, dailyFocus, viewer }: FeedClientProps
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [pendingToggle, startToggle] = useTransition();
   const [pendingReport, startReport] = useTransition();
+  const [pendingReflection, startReflection] = useTransition();
+  const [pendingReflectionId, setPendingReflectionId] = useState<string | null>(null);
 
   const filteredPosts = useMemo(() => {
     if (activeFilter === 'All') {
@@ -125,6 +138,48 @@ export function FeedClient({ initialPosts, dailyFocus, viewer }: FeedClientProps
           reactions: {
             counts: nextCounts,
             viewer: nextViewer,
+          },
+        };
+      })
+    );
+  };
+
+  const optimisticReflectionToggle = (postId: string) => {
+    let previous: { active: boolean; count: number } | null = null;
+    setPosts((current) =>
+      current.map((post) => {
+        if (post.id !== postId) {
+          return post;
+        }
+        previous = {
+          active: post.reflections.viewerHasReflected,
+          count: post.reflections.count,
+        };
+        const nextActive = !post.reflections.viewerHasReflected;
+        const nextCount = Math.max(0, post.reflections.count + (nextActive ? 1 : -1));
+        return {
+          ...post,
+          reflections: {
+            count: nextCount,
+            viewerHasReflected: nextActive,
+          },
+        };
+      })
+    );
+    return previous;
+  };
+
+  const applyReflectionResult = (postId: string, payload: { active: boolean; count: number }) => {
+    setPosts((current) =>
+      current.map((post) => {
+        if (post.id !== postId) {
+          return post;
+        }
+        return {
+          ...post,
+          reflections: {
+            count: Math.max(0, payload.count),
+            viewerHasReflected: payload.active,
           },
         };
       })
@@ -183,7 +238,33 @@ export function FeedClient({ initialPosts, dailyFocus, viewer }: FeedClientProps
     });
   };
 
-  const isPending = pendingToggle || pendingReport;
+  const handleToggleReflection = (postId: string) => {
+    if (!viewerId) {
+      toast.error('Sign in to save reflections.');
+      return;
+    }
+    if (pendingReflection && pendingReflectionId === postId) {
+      return;
+    }
+    const previous = optimisticReflectionToggle(postId);
+    setPendingReflectionId(postId);
+    startReflection(async () => {
+      try {
+        const result = await toggleReflectionAction({ postId });
+        applyReflectionResult(postId, { active: result.isActive, count: result.total });
+        toast.success(result.isActive ? 'Reflection saved.' : 'Reflection removed.');
+      } catch (error) {
+        if (previous) {
+          applyReflectionResult(postId, previous);
+        }
+        toast.error('We could not update this reflection. Please try again.');
+      } finally {
+        setPendingReflectionId((current) => (current === postId ? null : current));
+      }
+    });
+  };
+
+  const isPending = pendingToggle || pendingReport || pendingReflection;
 
   return (
     <div className="min-h-screen bg-midnight text-white">
@@ -377,9 +458,28 @@ export function FeedClient({ initialPosts, dailyFocus, viewer }: FeedClientProps
                         Praying {post.reactions.counts.praying}
                       </Button>
                     </div>
-                    <div className="flex items-center gap-3 text-sm text-white/60">
-                      <Share2 className="h-4 w-4" />
-                      <span>{post.commentCount} reflections</span>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <Button
+                        variant={post.reflections.viewerHasReflected ? 'default' : 'outline'}
+                        className={
+                          post.reflections.viewerHasReflected
+                            ? 'bg-olive text-black hover:bg-olive/90'
+                            : 'border-white/15 bg-transparent text-white/80 hover:text-white'
+                        }
+                        onClick={() => handleToggleReflection(post.id)}
+                        disabled={pendingReflection && pendingReflectionId === post.id}
+                      >
+                        {post.reflections.viewerHasReflected ? (
+                          <BookmarkCheck className="mr-2 h-4 w-4" />
+                        ) : (
+                          <BookmarkPlus className="mr-2 h-4 w-4" />
+                        )}
+                        {post.reflections.viewerHasReflected ? 'Reflection Saved' : 'Share Reflection'}
+                      </Button>
+                      <div className="flex items-center gap-2 text-sm text-white/60">
+                        <Share2 className="h-4 w-4" />
+                        <span>{post.reflections.count} saved reflections</span>
+                      </div>
                     </div>
                   </div>
 

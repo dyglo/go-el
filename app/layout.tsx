@@ -23,8 +23,33 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  /**
+   * Inline script sets the initial theme (runs before React hydration) to avoid
+   * a flash of incorrect styling. It reads `localStorage.theme` and applies
+   * either `light` or `dark` on the <html> element. If no preference exists, we
+   * keep the server-rendered `dark` class.
+   */
+  const setInitialTheme = `(() => {
+    try {
+      const theme = localStorage.getItem('theme');
+      const root = document.documentElement;
+      if (theme === 'light') {
+        root.classList.add('light');
+        root.classList.remove('dark');
+      } else if (theme === 'dark') {
+        root.classList.add('dark');
+        root.classList.remove('light');
+      }
+    } catch (e) {
+      // ignore
+    }
+  })()`;
+
   return (
-    <html lang="en" className="dark">
+    <html lang="en" className="dark" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: setInitialTheme }} />
+      </head>
       <body className="antialiased">
         {children}
         <Toaster position="bottom-right" richColors />
@@ -32,4 +57,3 @@ export default function RootLayout({
     </html>
   );
 }
-

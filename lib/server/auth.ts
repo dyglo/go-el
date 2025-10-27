@@ -17,6 +17,7 @@ import {
   type UserRecord,
 } from './db';
 import { ensureSeedData } from './seed';
+import { ensureProfileSlugForUser } from './profile';
 
 const SESSION_COOKIE = 'goel_session';
 const MAGIC_LINK_TTL_MINUTES = 30;
@@ -55,6 +56,7 @@ function toUserRecord(user: PrismaUser): UserRecord {
     role: user.role,
     location: user.location ?? undefined,
     avatarUrl: user.avatarUrl ?? undefined,
+    profileSlug: user.profileSlug ?? undefined,
     createdAt: user.createdAt.toISOString(),
   };
 }
@@ -131,7 +133,9 @@ export async function ensureUserByEmail(email: string): Promise<UserRecord> {
 
   const existing = await prisma.user.findUnique({ where: { email: normalised } });
   if (existing) {
-    return syncUserToMemory(existing);
+    await ensureProfileSlugForUser(existing.id, { name: existing.displayName, email: existing.email });
+    const refreshed = await prisma.user.findUnique({ where: { id: existing.id } });
+    return syncUserToMemory(refreshed ?? existing);
   }
 
   const seed = findSeedUserByEmail(normalised);
@@ -147,7 +151,9 @@ export async function ensureUserByEmail(email: string): Promise<UserRecord> {
         createdAt: new Date(seed.createdAt),
       },
     });
-    return syncUserToMemory(createdFromSeed);
+    await ensureProfileSlugForUser(createdFromSeed.id, { name: createdFromSeed.displayName, email: createdFromSeed.email });
+    const hydrated = await prisma.user.findUnique({ where: { id: createdFromSeed.id } });
+    return syncUserToMemory(hydrated ?? createdFromSeed);
   }
 
   const created = await prisma.user.create({
@@ -158,7 +164,9 @@ export async function ensureUserByEmail(email: string): Promise<UserRecord> {
     },
   });
 
-  return syncUserToMemory(created);
+  await ensureProfileSlugForUser(created.id, { name: created.displayName, email: created.email });
+  const hydratedCreated = await prisma.user.findUnique({ where: { id: created.id } });
+  return syncUserToMemory(hydratedCreated ?? created);
 }
 
 export async function createMagicLink(user: UserRecord): Promise<MagicLinkRecord> {
@@ -354,7 +362,9 @@ export async function registerUserWithPassword(input: {
         email,
       },
     });
-    return syncUserToMemory(updated);
+    await ensureProfileSlugForUser(updated.id, { name: updated.displayName, email: updated.email });
+    const hydrated = await prisma.user.findUnique({ where: { id: updated.id } });
+    return syncUserToMemory(hydrated ?? updated);
   }
 
   const created = await prisma.user.create({
@@ -366,7 +376,9 @@ export async function registerUserWithPassword(input: {
     },
   });
 
-  return syncUserToMemory(created);
+  await ensureProfileSlugForUser(created.id, { name: created.displayName, email: created.email });
+  const hydratedCreated = await prisma.user.findUnique({ where: { id: created.id } });
+  return syncUserToMemory(hydratedCreated ?? created);
 }
 
 export async function verifyUserCredentials(input: {

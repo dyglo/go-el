@@ -38,8 +38,11 @@
   }
 
   body {
-    @apply min-h-screen bg-black text-white font-sans;
+    @apply min-h-screen font-sans;
     background-image: radial-gradient(circle at top, rgba(212, 175, 55, 0.04), transparent 60%);
+    /* default dark appearance values (kept compatible with existing classes) */
+    background-color: #000;
+    color: #fff;
   }
 
   a {
@@ -67,6 +70,61 @@
   .font-sans {
     font-family: 'Inter', sans-serif;
   }
+}
+
+/* Light theme overrides -------------------------------------------------- */
+:root {
+  /* Light-theme variables (hue/saturation/lightness where useful) */
+  --background-light: 0 0% 100%; /* white */
+  --foreground-light: 0 0% 6%; /* near black */
+  --card-light: 210 10% 98%;
+  --muted-light: 220 8% 96%;
+}
+
+/* When the html element is marked `light`, swap base background/text and
+   override common utility classes which were authored for the dark scheme.
+   We use attribute/class substring selectors to broadly capture usages like
+   "bg-black", "text-white", and "border-white/..." across the codebase.
+*/
+html.light body {
+  background-color: hsl(var(--background-light));
+  color: hsl(var(--foreground-light));
+}
+
+/* Override elements that used `bg-black` classes in dark mode */
+html.light [class*="bg-black"] {
+  background-color: hsl(var(--background-light)) !important;
+}
+
+/* Override text-white utilities */
+html.light [class*="text-white"] {
+  color: hsl(var(--foreground-light)) !important;
+}
+
+/* Override borders authored with white variants */
+html.light [class*="border-white"] {
+  border-color: rgba(0,0,0,0.08) !important;
+}
+
+/* Soften shadow colors that referenced black */
+html.light .shadow-black\/30 {
+  box-shadow: 0 20px 60px -30px rgba(0,0,0,0.08) !important;
+}
+
+/* Some translucent classes like bg-white/5 were used as accents in dark
+   mode — ensure they become subtle light surfaces in light mode. */
+html.light [class*="bg-white"] {
+  background-color: rgba(0,0,0,0.03) !important;
+}
+
+/* Inputs and placeholders */
+html.light [class*="placeholder:text-white"]::placeholder {
+  color: rgba(0,0,0,0.45) !important;
+}
+
+/* Links keep golden color but reduce saturation on hover slightly in light */
+html.light a:hover {
+  color: #b88f2a;
 }
 
 @layer utilities {

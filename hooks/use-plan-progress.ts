@@ -7,11 +7,16 @@ type StoredProgress = {
   completed: Record<number, string>;
 };
 
+type UsePlanProgressOptions = {
+  totalDays?: number;
+  initialCompleted?: Record<number, string>;
+};
+
 const STORAGE_KEY = 'goel:gospel-plan:progress';
 const MAX_PLAN_DAYS = 30;
 const MS_PER_DAY = 1000 * 60 * 60 * 24;
 
-function initialState(): StoredProgress {
+function readLocalState(): StoredProgress {
   if (typeof window === 'undefined') {
     return { completed: {} };
   }
@@ -29,6 +34,21 @@ function initialState(): StoredProgress {
   } catch {
     return { completed: {} };
   }
+}
+
+function initialState(seed?: StoredProgress): StoredProgress {
+  if (typeof window === 'undefined') {
+    return seed ?? { completed: {} };
+  }
+
+  const local = readLocalState();
+  if (!seed) {
+    return local;
+  }
+
+  return {
+    completed: { ...local.completed, ...seed.completed },
+  };
 }
 
 function saveState(state: StoredProgress) {
@@ -107,55 +127,110 @@ function computeStreaks(completedDateKeys: string[]) {
   return { current, longest };
 }
 
-export function usePlanProgress(totalDays: number = MAX_PLAN_DAYS) {
-  const [state, setState] = useState<StoredProgress>(() => initialState());
+export function usePlanProgress(options: UsePlanProgressOptions = {}) {
+  const { totalDays = MAX_PLAN_DAYS, initialCompleted } = options;
+
+  const initialCompletedSignature = useMemo(
+    () => (initialCompleted ? JSON.stringify(initialCompleted) : null),
+    [initialCompleted]
+  );
+
+  const seedState = useMemo<StoredProgress | undefined>(() => {
+    if (!initialCompleted) {
+      return undefined;
+    }
+    return {
+      completed: { ...initialCompleted },
+    };
+  }, [initialCompletedSignature]);
+
+  const [state, setState] = useState<StoredProgress>(() => initialState(seedState));
 
   useEffect(() => {
     if (typeof window === 'undefined') {
       return;
     }
-    setState(initialState());
-  }, []);
+    setState(initialState(seedState));
+  }, [initialCompletedSignature, seedState]);
 
   useEffect(() => {
     saveState(state);
   }, [state]);
 
-  const completedDays = useMemo(() => Object.keys(state.completed).map((day) => Number.parseInt(day, 10)), [state]);
-  const completedSet = useMemo(() => new Set(completedDays), [completedDays]);
-  const completedCount = completedSet.size;
+  const completedDaysArray = useMemo(
+    () => Object.keys(state.completed).map((day) => Number.parseInt(day, 10)),
+    [state.completed]
+  );
+  const completedDays = useMemo(() => new Set(completedDaysArray), [completedDaysArray]);
+  const completedCount = completedDays.size;
   const completionPercent = totalDays > 0 ? Math.min(100, (completedCount / totalDays) * 100) : 0;
-  const completedDateKeys = useMemo(() => Object.values(state.completed).map((iso) => toDateKey(iso)), [state]);
+  const completedDateKeys = useMemo(
+    () => Object.values(state.completed).map((iso) => toDateKey(iso)),
+    [state.completed]
+  );
   const streaks = useMemo(() => computeStreaks(completedDateKeys), [completedDateKeys]);
 
   const toggleDay = useCallback(
     (day: number) => {
       if (day < 1 || day > totalDays) {
-        return;
+        return {
+          completed: false,
+          timestamp: undefined,
+          previous: null as { completed: boolean; timestamp?: string } | null,
+        };
       }
+
+      let snapshot: { completed: boolean; timestamp?: string } = { completed: false };
+      let outcome: { completed: boolean; timestamp?: string } = { completed: false };
 
       setState((previous) => {
         const next: StoredProgress = {
           completed: { ...previous.completed },
         };
-
-        if (next.completed[day]) {
+        const existing = previous.completed[day];
+        snapshot = {
+          completed: Boolean(existing),
+          timestamp: existing,
+        };
+        if (existing) {
           delete next.completed[day];
+          outcome = { completed: false, timestamp: undefined };
         } else {
-          next.completed[day] = new Date().toISOString();
+          const iso = new Date().toISOString();
+          next.completed[day] = iso;
+          outcome = { completed: true, timestamp: iso };
         }
-
         return next;
       });
+
+      return {
+        ...outcome,
+        previous: snapshot,
+      };
     },
     [totalDays]
   );
 
+  const setDayState = useCallback((day: number, completed: boolean, timestamp?: string) => {
+    setState((previous) => {
+      const next: StoredProgress = {
+        completed: { ...previous.completed },
+      };
+      if (completed) {
+        next.completed[day] = timestamp ?? new Date().toISOString();
+      } else {
+        delete next.completed[day];
+      }
+      return next;
+    });
+  }, []);
+
   return {
-    completedDays: completedSet,
+    completedDays,
     completedCount,
     completionPercent,
     streaks,
     toggleDay,
+    setDayState,
   };
 }

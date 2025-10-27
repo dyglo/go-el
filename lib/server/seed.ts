@@ -21,6 +21,7 @@ const USER_SEED: UserRecord[] = [
     email: 'miriam@example.com',
     role: 'House Church Coordinator',
     location: 'Jerusalem, IL',
+    profileSlug: 'miriam-l',
     createdAt: new Date(Date.now() - 1000 * 60 * 60 * 24 * 36).toISOString(),
   },
   {
@@ -29,6 +30,7 @@ const USER_SEED: UserRecord[] = [
     email: 'samuel@example.com',
     role: 'Mission Pastor',
     location: 'Nairobi, KE',
+    profileSlug: 'samuel-k',
     createdAt: new Date(Date.now() - 1000 * 60 * 60 * 24 * 26).toISOString(),
   },
   {
@@ -37,6 +39,7 @@ const USER_SEED: UserRecord[] = [
     email: 'grace@example.com',
     role: 'Discipleship Guide',
     location: 'Austin, US',
+    profileSlug: 'grace-p',
     createdAt: new Date(Date.now() - 1000 * 60 * 60 * 24 * 18).toISOString(),
   },
   {
@@ -45,6 +48,7 @@ const USER_SEED: UserRecord[] = [
     email: 'noah@example.com',
     role: 'Prayer Room Host',
     location: 'Toronto, CA',
+    profileSlug: 'noah-a',
     createdAt: new Date(Date.now() - 1000 * 60 * 60 * 24 * 7).toISOString(),
   },
   {
@@ -53,6 +57,7 @@ const USER_SEED: UserRecord[] = [
     email: 'hannah@example.com',
     role: 'Prayer Scribe',
     location: 'London, UK',
+    profileSlug: 'hannah-r',
     createdAt: new Date(Date.now() - 1000 * 60 * 60 * 24 * 5).toISOString(),
   },
   {
@@ -61,6 +66,7 @@ const USER_SEED: UserRecord[] = [
     email: 'abigail@goel.app',
     role: 'Admin',
     location: 'Chicago, US',
+    profileSlug: 'abigail-k',
     createdAt: new Date(Date.now() - 1000 * 60 * 60 * 24 * 40).toISOString(),
   },
 ];
@@ -116,6 +122,80 @@ const POST_SEED: SeedPostArgs[] = [
     createdHoursAgo: 48,
     reactionCounts: { amen: 27, praying: 11 },
     commentCount: 3,
+  },
+];
+
+type ReflectionSeed = {
+  id: string;
+  userId: string;
+  postId: string;
+  createdHoursAgo: number;
+};
+
+const REFLECTION_SEED: ReflectionSeed[] = [
+  {
+    id: 'reflection_miriam_john15',
+    userId: 'user_miriam',
+    postId: 'post_john_15_4_5',
+    createdHoursAgo: 30,
+  },
+  {
+    id: 'reflection_grace_psalm23',
+    userId: 'user_grace',
+    postId: 'post_psalm_23_1_3',
+    createdHoursAgo: 60,
+  },
+  {
+    id: 'reflection_noah_hebrews10',
+    userId: 'user_noah',
+    postId: 'post_hebrews_10_24_25',
+    createdHoursAgo: 80,
+  },
+];
+
+type PlanProgressSeed = {
+  id: string;
+  userId: string;
+  planId: string;
+  day: number;
+  completedDaysAgo: number;
+};
+
+const PLAN_PROGRESS_SEED: PlanProgressSeed[] = [
+  {
+    id: 'progress_miriam_day_1',
+    userId: 'user_miriam',
+    planId: 'gospel-journey-30',
+    day: 1,
+    completedDaysAgo: 10,
+  },
+  {
+    id: 'progress_miriam_day_2',
+    userId: 'user_miriam',
+    planId: 'gospel-journey-30',
+    day: 2,
+    completedDaysAgo: 9,
+  },
+  {
+    id: 'progress_grace_day_1',
+    userId: 'user_grace',
+    planId: 'gospel-journey-30',
+    day: 1,
+    completedDaysAgo: 5,
+  },
+  {
+    id: 'progress_grace_day_2',
+    userId: 'user_grace',
+    planId: 'gospel-journey-30',
+    day: 2,
+    completedDaysAgo: 3,
+  },
+  {
+    id: 'progress_grace_day_3',
+    userId: 'user_grace',
+    planId: 'gospel-journey-30',
+    day: 3,
+    completedDaysAgo: 1,
   },
 ];
 
@@ -294,6 +374,31 @@ export function ensureSeedData() {
     });
   }
 
+  if (db.reflections.size === 0) {
+    REFLECTION_SEED.forEach((seed) => {
+      const createdAt = new Date(now - seed.createdHoursAgo * 60 * 60 * 1000).toISOString();
+      db.reflections.set(seed.id, {
+        id: seed.id,
+        userId: seed.userId,
+        postId: seed.postId,
+        createdAt,
+      });
+    });
+  }
+
+  if (db.planProgress.size === 0) {
+    PLAN_PROGRESS_SEED.forEach((seed) => {
+      const completedAt = new Date(now - seed.completedDaysAgo * 24 * 60 * 60 * 1000).toISOString();
+      db.planProgress.set(seed.id, {
+        id: seed.id,
+        userId: seed.userId,
+        planId: seed.planId,
+        day: seed.day,
+        completedAt,
+      });
+    });
+  }
+
   if (db.groups.size === 0) {
     GROUP_SEED.forEach((seed) => {
       const createdAt = new Date(now - seed.createdDaysAgo * 24 * 60 * 60 * 1000);
@@ -444,6 +549,8 @@ export function resetSeedData() {
   db.posts.clear();
   db.reports.clear();
   db.shares.clear();
+  db.reflections.clear();
+  db.planProgress.clear();
   db.sessions.clear();
   db.magicLinks.clear();
   db.oauthStates.clear();

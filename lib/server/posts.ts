@@ -10,13 +10,14 @@ import {
   type User,
 } from '@prisma/client';
 import { prisma } from './prisma';
+import { getReflectionMetadataForPosts } from './reflections';
 import type { Passage, PassageReference } from '@/lib/scripture';
 import { bookFromSlug, scriptureRegistry } from '@/lib/scripture';
 
 type ReactionLabel = 'amen' | 'praying';
 export type ReactionType = ReactionLabel;
 
-type PostWithRelations = {
+export type PostWithRelations = {
   id: string;
   reference: string;
   passageText: string;
@@ -50,6 +51,10 @@ export type FeedPost = {
     viewer: ReactionType[];
   };
   reportCount: number;
+  reflections: {
+    count: number;
+    viewerHasReflected: boolean;
+  };
 };
 
 export type SharePayload = {
@@ -103,7 +108,11 @@ function emptyReactionCounts(): Record<ReactionLabel, number> {
   }, { amen: 0, praying: 0 });
 }
 
-function toFeedPost(post: PostWithRelations, viewerId?: string): FeedPost {
+function toFeedPost(
+  post: PostWithRelations,
+  viewerId?: string,
+  reflectionInfo?: { count: number; viewerHas: boolean }
+): FeedPost {
   const counts = emptyReactionCounts();
   const viewerReactions = new Set<ReactionLabel>();
 
@@ -116,6 +125,8 @@ function toFeedPost(post: PostWithRelations, viewerId?: string): FeedPost {
   });
 
   const authorName = ensureUserName(post.author);
+  const reflectionCount = reflectionInfo?.count ?? 0;
+  const viewerHasReflection = reflectionInfo?.viewerHas ?? false;
 
   return {
     id: post.id,
@@ -136,7 +147,26 @@ function toFeedPost(post: PostWithRelations, viewerId?: string): FeedPost {
       viewer: Array.from(viewerReactions.values()),
     },
     reportCount: post.reports.length,
+    reflections: {
+      count: reflectionCount,
+      viewerHasReflected: viewerHasReflection,
+    },
   };
+}
+
+export async function hydratePostsToFeedPosts(posts: PostWithRelations[], viewerId?: string): Promise<FeedPost[]> {
+  if (posts.length === 0) {
+    return [];
+  }
+  const postIds = posts.map((post) => post.id);
+  const { counts, viewer } = await getReflectionMetadataForPosts(postIds, viewerId);
+
+  return posts.map((post) =>
+    toFeedPost(post, viewerId, {
+      count: counts.get(post.id) ?? 0,
+      viewerHas: viewer.has(post.id),
+    })
+  );
 }
 
 export async function getFeedPosts(viewerId?: string): Promise<FeedPost[]> {
@@ -150,7 +180,51 @@ export async function getFeedPosts(viewerId?: string): Promise<FeedPost[]> {
     },
   });
 
-  return posts.map((post) => toFeedPost(post, viewerId));
+  return hydratePostsToFeedPosts(posts, viewerId);
+}
+
+export type PaginatedFeedPosts = {
+  items: FeedPost[];
+  total: number;
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
+};
+
+export async function getPostsByAuthor(
+  authorId: string,
+  viewerId?: string,
+  options?: { page?: number; pageSize?: number }
+): Promise<PaginatedFeedPosts> {
+  const page = options?.page && options.page > 0 ? options.page : 1;
+  const pageSize = options?.pageSize && options.pageSize > 0 ? options.pageSize : 10;
+  const skip = (page - 1) * pageSize;
+
+  const [posts, total] = await Promise.all([
+    prisma.post.findMany({
+      where: { authorId, status: PostStatus.PUBLISHED },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        author: true,
+        reactions: true,
+        reports: true,
+      },
+      skip,
+      take: pageSize,
+    }),
+    prisma.post.count({ where: { authorId, status: PostStatus.PUBLISHED } }),
+  ]);
+
+  const items = await hydratePostsToFeedPosts(posts, viewerId);
+  const hasMore = skip + posts.length < total;
+
+  return {
+    items,
+    total,
+    page,
+    pageSize,
+    hasMore,
+  };
 }
 
 export async function createShare(payload: SharePayload): Promise<FeedPost> {
@@ -190,7 +264,7 @@ export async function createShare(payload: SharePayload): Promise<FeedPost> {
     },
   });
 
-  return toFeedPost(createdPost, payload.userId);
+  return toFeedPost(createdPost, payload.userId, { count: 0, viewerHas: false });
 }
 
 export async function toggleReaction(postId: string, reaction: ReactionType, viewerId: string) {

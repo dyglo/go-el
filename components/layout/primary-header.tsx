@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTrigger, SheetClose } from '@/components/ui/sheet';
 import { cn } from '@/lib/utils';
 
-type NavKey = 'feed' | 'plans' | 'groups';
+type NavKey = 'feed' | 'plans' | 'groups' | 'profile';
 
 type PrimaryAction = {
   label: string;
@@ -29,6 +29,7 @@ const navItems: Array<{ key: NavKey; label: string; href: string }> = [
   { key: 'feed', label: 'Feed', href: '/feed' },
   { key: 'plans', label: 'Plans', href: '/plans' },
   { key: 'groups', label: 'Prayer Rooms', href: '/groups' },
+  { key: 'profile', label: 'Profile', href: '/profile' },
 ];
 
 export function PrimaryHeader({
@@ -45,6 +46,9 @@ export function PrimaryHeader({
     navItems.find((item) => {
       if (item.href === '/feed') {
         return pathname === '/' || pathname?.startsWith(item.href);
+      }
+      if (item.key === 'profile') {
+        return pathname?.startsWith('/profile') || pathname?.startsWith('/u/');
       }
       return pathname?.startsWith(item.href);
     })?.key;
