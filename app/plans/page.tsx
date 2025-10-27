@@ -10,10 +10,11 @@ export default async function PlansPage() {
 
   if (viewer) {
     const entries = await getPlanProgressEntries(viewer.id, plan.id);
-    initialProgress = entries.reduce<Record<number, string>>((acc, entry) => {
-      acc[entry.day] = entry.completedAt.toISOString();
-      return acc;
-    }, {});
+    const progressByDay: Record<number, string> = {};
+    for (const entry of entries) {
+      progressByDay[entry.day] = entry.completedAt.toISOString();
+    }
+    initialProgress = progressByDay;
   }
 
   return (
