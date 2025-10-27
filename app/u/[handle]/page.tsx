@@ -65,7 +65,7 @@ export default async function ProfilePage({
         page: reflectionsPage,
         pageSize: REFLECTIONS_PAGE_SIZE,
       }).then(async (result) => {
-        const reflectionPosts = result.reflections.map((entry) => entry.post);
+  const reflectionPosts = result.reflections.map((entry: any) => entry.post);
         const hydrated = reflectionPosts.length
           ? await hydratePostsToFeedPosts(reflectionPosts, viewer?.id)
           : [];
