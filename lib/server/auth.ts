@@ -56,7 +56,11 @@ function toUserRecord(user: PrismaUser): UserRecord {
     role: user.role,
     location: user.location ?? undefined,
     avatarUrl: user.avatarUrl ?? undefined,
-    profileSlug: user.profileSlug ?? undefined,
+      // Prisma schema may not always include `profileSlug` on the generated
+      // User type (migrations or shadow DB differences). Cast to any so the
+      // build doesn't fail when the property isn't present while keeping the
+      // runtime behavior (undefined if absent).
+      profileSlug: (user as any).profileSlug ?? undefined,
     createdAt: user.createdAt.toISOString(),
   };
 }
