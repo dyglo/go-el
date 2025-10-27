@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { AuthProvider as PrismaAuthProvider } from '@prisma/client';
+import { AuthProvider as PrismaAuthProvider, Prisma } from '@prisma/client';
 import type {
   MagicLink as PrismaMagicLink,
   OAuthState as PrismaOAuthState,
@@ -247,17 +247,29 @@ export async function revokeSession(sessionId: string): Promise<void> {
 }
 
 export async function getSession(sessionId: string): Promise<SessionRecord | null> {
-  const session = await prisma.session.findUnique({ where: { id: sessionId } });
-  if (!session) {
+  try {
+    const session = await prisma.session.findUnique({ where: { id: sessionId } });
+    if (!session) {
+      return null;
+    }
+
+    if (session.expiresAt.getTime() < now().getTime()) {
+      await prisma.session.delete({ where: { id: sessionId } }).catch(() => {});
+      return null;
+    }
+
+    return toSessionRecord(session);
+  } catch (error) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn('Failed to load session from database. Treating as anonymous.', error);
+    }
+
+    const isInitializationIssue = error instanceof Prisma.PrismaClientInitializationError;
+    if (!isInitializationIssue) {
+      throw error;
+    }
     return null;
   }
-
-  if (session.expiresAt.getTime() < now().getTime()) {
-    await prisma.session.delete({ where: { id: sessionId } }).catch(() => {});
-    return null;
-  }
-
-  return toSessionRecord(session);
 }
 
 export async function beginOAuth(provider: 'google' | 'apple', redirectTo?: string): Promise<OAuthStateRecord> {
@@ -302,6 +314,7 @@ export function setSessionCookie(sessionId: string) {
 }
 
 export function clearSessionCookie() {
+  // Only call this from Server Actions or Route Handlers where cookie mutation is supported.
   const cookieStore = cookies();
   cookieStore.delete(SESSION_COOKIE);
 }
@@ -320,14 +333,12 @@ export async function getCurrentUser(): Promise<UserRecord | null> {
 
   const session = await getSession(sessionId);
   if (!session) {
-    clearSessionCookie();
     return null;
   }
 
   const user = await loadUser(session.userId);
   if (!user) {
     await revokeSession(session.id);
-    clearSessionCookie();
     return null;
   }
 
