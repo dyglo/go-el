@@ -5,6 +5,7 @@ import { getPostsByAuthor, type FeedPost, hydratePostsToFeedPosts } from '@/lib/
 import { listReflectionsForUser } from '@/lib/server/reflections';
 import { summarisePlanProgress } from '@/lib/server/plan-progress';
 import { GOSPEL_PLAN_ID, getPlanOverview } from '@/lib/server/plans';
+import { signOutAction } from '@/app/auth/actions';
 import { ProfileClient } from './profile-client';
 
 const POSTS_PAGE_SIZE = 6;
@@ -65,7 +66,7 @@ export default async function ProfilePage({
         page: reflectionsPage,
         pageSize: REFLECTIONS_PAGE_SIZE,
       }).then(async (result) => {
-  const reflectionPosts = result.reflections.map((entry: any) => entry.post);
+        const reflectionPosts = result.reflections.map((entry) => entry.post);
         const hydrated = reflectionPosts.length
           ? await hydratePostsToFeedPosts(reflectionPosts, viewer?.id)
           : [];
@@ -145,6 +146,7 @@ export default async function ProfilePage({
       hasPlanTab={isOwner && planSummaries.length > 0}
       postsPage={postsPage}
       reflectionsPage={reflectionsPage}
+      onSignOut={signOutAction}
     />
   );
 }

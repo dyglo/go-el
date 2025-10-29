@@ -1,9 +1,9 @@
 'use client';
 
-import { useMemo, useTransition } from 'react';
+import { useMemo, useState, useTransition } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { ArrowUpRight, BookmarkCheck, Calendar, Flame, Heart, MapPin, MessageCircle, Share2 } from 'lucide-react';
+import { ArrowUpRight, BookmarkCheck, Calendar, Flame, Heart, LogOut, MapPin, MessageCircle, Share2 } from 'lucide-react';
 import { PrimaryHeader } from '@/components/layout/primary-header';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card } from '@/components/ui/card';
@@ -65,6 +65,7 @@ type ProfileClientProps = {
   hasPlanTab: boolean;
   postsPage: number;
   reflectionsPage: number;
+  onSignOut: () => Promise<{ signedOut: boolean }>;
 };
 
 function formatTimestamp(iso: string) {
@@ -123,14 +124,35 @@ export function ProfileClient({
   hasPlanTab,
   postsPage,
   reflectionsPage,
+  onSignOut,
 }: ProfileClientProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [isNavigating, startTransition] = useTransition();
+  const [isSigningOut, setIsSigningOut] = useState(false);
   const isOwner = viewerId === profile.id;
 
   const totalReflections = reflections?.total ?? 0;
+
+  const handleSignOut = async () => {
+    if (isSigningOut) {
+      return;
+    }
+
+    setIsSigningOut(true);
+    try {
+      const result = await onSignOut();
+      if (result?.signedOut) {
+        router.replace('/auth/sign-in');
+        router.refresh();
+      }
+    } catch (error) {
+      // Silent failure – button will re-enable so the user can retry.
+    } finally {
+      setIsSigningOut(false);
+    }
+  };
 
   const handleTabChange = (value: string) => {
     startTransition(() => {
@@ -317,14 +339,27 @@ export function ProfileClient({
                 </div>
               </div>
             </div>
-            <div className="grid gap-3 sm:grid-cols-3">
-              {topStats.map((stat) => (
-                <Card key={stat.title} className="rounded-2xl border border-white/10 bg-white/5 p-4 text-center">
-                  <p className="text-sm uppercase tracking-[0.3em] text-white/40">{stat.title}</p>
-                  <p className="mt-2 text-2xl font-semibold text-golden">{stat.value}</p>
-                  <p className="mt-1 text-xs text-white/60">{stat.description}</p>
-                </Card>
-              ))}
+            <div className="flex w-full flex-col items-stretch gap-3 md:w-auto md:items-end">
+              {isOwner ? (
+                <Button
+                  variant="outline"
+                  className="border-golden text-golden hover:bg-golden/10"
+                  onClick={handleSignOut}
+                  disabled={isSigningOut}
+                >
+                  <LogOut className="mr-2 h-4 w-4" />
+                  {isSigningOut ? 'Signing out…' : 'Sign out'}
+                </Button>
+              ) : null}
+              <div className="grid gap-3 sm:grid-cols-3">
+                {topStats.map((stat) => (
+                  <Card key={stat.title} className="rounded-2xl border border-white/10 bg-white/5 p-4 text-center">
+                    <p className="text-sm uppercase tracking-[0.3em] text-white/40">{stat.title}</p>
+                    <p className="mt-2 text-2xl font-semibold text-golden">{stat.value}</p>
+                    <p className="mt-1 text-xs text-white/60">{stat.description}</p>
+                  </Card>
+                ))}
+              </div>
             </div>
           </div>
         </section>
